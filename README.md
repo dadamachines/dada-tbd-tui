@@ -56,7 +56,7 @@ Flash P4 + Pico firmware. Keeps your SD card data (samples, presets, macros) int
 
 1. Connect **front JTAG port** (USB-C #3) + a **back port** (#1 or #2) for power
 2. Tool downloads & flashes the ESP32-P4 firmware
-3. Connect **back Port #2**, put RP2350 in BOOTSEL mode → tool copies UF2
+3. Hold **BOOTSEL button** on front panel, plug **back Port #2** → release button → tool copies UF2
 
 ### 🗄️ Full SD Card Deploy
 Erase & re-write the SD card image, then flash all firmware. Use for fresh installs or SD card recovery.
