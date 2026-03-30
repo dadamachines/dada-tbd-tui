@@ -21,6 +21,7 @@ import platform
 import glob
 import hashlib
 import re
+import ssl
 import time
 import json
 import shutil
@@ -33,6 +34,7 @@ import zlib
 from pathlib import Path
 
 PLATFORM = platform.system()  # "Darwin", "Linux", or "Windows"
+SSL_CONTEXT = ssl.create_default_context()  # explicit TLS verification
 
 # ═══════════════════════════════════════════════════
 #  CONSTANTS
@@ -325,7 +327,7 @@ def progress_bar(done, total, width=35):
 #  DOWNLOAD & CACHE
 # ═══════════════════════════════════════════════════
 def ensure_cache_dir():
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True, mode=0o700)
     return CACHE_DIR
 
 
@@ -402,7 +404,7 @@ def download_file(url, dest_path, label=None, timeout=30, verify=True):
 
     try:
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with urllib.request.urlopen(url, timeout=timeout, context=SSL_CONTEXT) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
             chunk_size = 64 * 1024
@@ -457,7 +459,7 @@ def _fetch_cdn_hash(url):
 
     hash_url = url + ".sha256"
     try:
-        with urllib.request.urlopen(hash_url, timeout=10) as resp:
+        with urllib.request.urlopen(hash_url, timeout=10, context=SSL_CONTEXT) as resp:
             content = resp.read(256).decode("ascii", errors="replace").strip()
             # Hash files may contain "hash  filename" or just "hash"
             return content.split()[0] if content else None
@@ -519,7 +521,7 @@ def fetch_releases(channel="stable"):
     url = f"{FIRMWARE_CDN}/{channel}/releases.json"
     for attempt in range(1, 4):
         try:
-            with urllib.request.urlopen(url, timeout=15) as resp:
+            with urllib.request.urlopen(url, timeout=15, context=SSL_CONTEXT) as resp:
                 return json.loads(resp.read().decode())
         except Exception as e:
             if attempt < 3:
@@ -556,7 +558,7 @@ def _discover_feature_branches():
     try:
         req = urllib.request.Request(api_url)
         req.add_header("Accept", "application/vnd.github+json")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as resp:
             releases = json.loads(resp.read().decode())
     except Exception:
         return []
@@ -576,7 +578,7 @@ def _discover_feature_branches():
         try:
             url = f"{FIRMWARE_CDN}/{name}/releases.json"
             req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=5):
+            with urllib.request.urlopen(req, timeout=5, context=SSL_CONTEXT):
                 verified.append(name)
         except Exception:
             pass
@@ -953,7 +955,8 @@ def read_partition_table(esptool_cmd, port):
 
     Returns list of partition entries or None on failure.
     """
-    pt_file = os.path.join(tempfile.gettempdir(), "tbd_partition_table.bin")
+    fd, pt_file = tempfile.mkstemp(prefix="tbd_pt_", suffix=".bin")
+    os.close(fd)
     cmd = esptool_cmd + [
         "--chip", CHIP,
         "--port", port,
@@ -1080,8 +1083,8 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
 
     # ── Build OTA data blob (select ota_1 = slot 1) ──
     ota_data = build_ota_data(1)
-    ota_data_path = os.path.join(tempfile.gettempdir(), "ota_data_msc.bin")
-    with open(ota_data_path, 'wb') as f:
+    fd, ota_data_path = tempfile.mkstemp(prefix="tbd_ota_", suffix=".bin")
+    with os.fdopen(fd, 'wb') as f:
         f.write(ota_data)
 
     size_mb = os.path.getsize(msc_path) / 1048576
@@ -1606,9 +1609,8 @@ def wait_for_sd_card(timeout=SD_MOUNT_TIMEOUT):
 def erase_sd_card(mount_point):
     """Erase all user files on the SD card. Returns True on success.
 
-    Safety: validates mount_point is a removable volume before erasing.
-    Handles macOS filesystem metadata (.Spotlight-V100, .fseventsd) that
-    can become read-only on FAT volumes.
+    Safety: validates mount_point is a removable volume before erasing,
+    then re-verifies the device node hasn't changed (TOCTOU mitigation).
     """
     # SAFETY GATE: Multi-layer validation before any deletion
     safe, reason = _is_safe_to_erase(mount_point)
@@ -1617,6 +1619,14 @@ def erase_sd_card(mount_point):
         return False
 
     vol_info = _get_volume_info(mount_point)
+
+    # TOCTOU mitigation: re-verify the volume is still removable media
+    # right before we start deleting. Catches mount-point swaps between
+    # the initial safety check and the actual erase.
+    if not _is_removable_volume(mount_point):
+        status("[E402] REFUSED to erase: volume changed (no longer removable)", "err")
+        return False
+
     status(f"Erasing SD card: {vol_info['name']} ({vol_info['filesystem']}, {vol_info['size']}) on {vol_info['device']}", "work")
 
     errors = []
@@ -2584,6 +2594,12 @@ def run_cli(args):
     # "beta" is a shorthand — use staging (latest pre-release)
     if channel == "beta":
         channel = "staging"
+
+    # Validate channel name to prevent path traversal in CDN URLs
+    if not re.match(r'^[a-z0-9][a-z0-9-]*$', channel):
+        status(f"[E109] Invalid channel name: {channel}", "err")
+        status("Allowed: lowercase letters, digits, hyphens (e.g. stable, staging, feature-test-xyz)", "info")
+        return
 
     if args.quick:
         wizard_quick(channel, is_cli=True)

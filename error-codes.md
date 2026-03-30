@@ -17,6 +17,7 @@ Quote the code when reporting issues.
 | E106 | No SD card image available | The selected firmware version has no SD card image | Choose a different version, or use Quick Update instead. |
 | E107 | Cached file corrupted | SHA-256 of cached file doesn't match the hash recorded at download time | The file will be re-downloaded automatically. If this keeps happening, check your disk for errors. |
 | E108 | Integrity check FAILED | SHA-256 of downloaded file doesn't match the server-provided hash | Could be a corrupted download or tampered file. The file is deleted automatically — retry. If it persists, check your network (corporate proxy, VPN). |
+| E109 | Invalid channel name | `--channel` value contains characters not allowed in channel names | Use lowercase letters, digits, and hyphens only (e.g. `stable`, `staging`, `feature-test-xyz`). |
 
 ## E2xx — Environment & Prerequisites
 
