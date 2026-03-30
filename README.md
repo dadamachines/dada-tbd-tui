@@ -107,11 +107,12 @@ Erase & re-write the SD card image, then flash all firmware. Use for fresh insta
 |---------|-----|
 | `Python not found` | Install Python 3.8+ — the launcher scripts will guide you |
 | `ensurepip is not available` (Linux) | `sudo apt install python3-venv` (Debian/Ubuntu) or `sudo dnf install python3-libs` (Fedora) |
-| No serial port detected | Make sure the **front JTAG USB-C port** is connected. If the port still doesn't appear, hold the **BOOT button** (on the back, between Port #1 and #2) while plugging in the JTAG cable |
-| `No serial data received` | Try the other USB port, or a different cable. Hold the BOOT button while plugging in |
+| No serial port detected | Make sure the **front JTAG USB-C port** is connected. If it still doesn't appear: unplug all cables → hold **BOOT button** (on the back, between Port #1 and #2) → plug in JTAG while holding BOOT → release BOOT after 2 seconds → reconnect a back port for power |
+| `No serial data received` | Try the other USB port, or a different cable. Enter download mode manually (see row above) |
 | Flash fails / timeout | Re-run — the tool retries automatically. Power-cycle the TBD-16 if stuck |
-| SD card not appearing (MSC mode) | Wait 20–30 seconds. Check back Port #1 is connected. Try a powered USB hub (older Macs may have weak USB power) |
-| Device stuck in MSC mode | The tool will offer to flash P4 firmware to recover. Or use menu option **[3] Flash ESP32-P4 only** |
+| SD card not appearing (MSC mode) | Wait 20–30 seconds. Replug back Port #1. Try a powered USB hub (older Macs may have weak USB power). The tool will guide you through retries |
+| Device stuck in MSC mode | The tool restores normal boot automatically. Or use menu option **[3] Flash ESP32-P4 only** |
+| SD card needs separate deploy | Use menu option **[5] Deploy SD card image only** with an external card reader |
 | Colors hard to read | macOS Terminal.app uses a white background by default. The tool auto-detects this and adjusts colors. If colors are still hard to read, switch to a dark terminal profile |
 | Device crashes after SD update | macOS `._` dot-files — the tool cleans these automatically. Re-run Full SD Deploy if needed |
 
