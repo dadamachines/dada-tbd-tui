@@ -76,7 +76,7 @@ PROTECTED_PATHS = {
 class S:
     RESET   = "\033[0m"
     BOLD    = "\033[1m"
-    DIM     = "\033[2m"
+    DIM     = "\033[90m"
     RED     = "\033[91m"
     GREEN   = "\033[92m"
     YELLOW  = "\033[93m"
@@ -148,7 +148,7 @@ def action_box(lines):
     w = 55
     print()
     print(f"  {S.YELLOW}┌{'─' * w}┐{S.RESET}")
-    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}👉 ACTION REQUIRED{S.RESET}{' ' * (w - 20)}{S.YELLOW}│{S.RESET}")
+    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}👉 ACTION REQUIRED{S.RESET}{' ' * (w - 21)}{S.YELLOW}│{S.RESET}")
     print(f"  {S.YELLOW}│{' ' * w}│{S.RESET}")
     for line in lines:
         padding = w - 2 - len(line)
@@ -211,7 +211,7 @@ def power_cycle_warning():
     print(f"\n{S.YELLOW}{S.BOLD}", end="")
     print("    ╔═════════════════════════════════════════════════════════╗")
     print("    ║                                                         ║")
-    print("    ║   ⚠  Power-cycle your device to finish!                 ║")
+    print("    ║   ⚠  Power-cycle your device to finish!                ║")
     print("    ║                                                         ║")
     print("    ║   1. Disconnect ALL USB cables                          ║")
     print("    ║   2. Wait 5 seconds                                     ║")
@@ -1685,7 +1685,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     # ── Warn about data loss ──
     print()
     print(f"  {S.RED}┌─────────────────────────────────────────────────────────┐{S.RESET}")
-    print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  WARNING: This will ERASE ALL data on the SD card!{S.RESET}  {S.RED}│{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  WARNING: This will ERASE ALL data on the SD card!{S.RESET} {S.RED}│{S.RESET}")
     print(f"  {S.RED}│{S.RESET}                                                         {S.RED}│{S.RESET}")
     print(f"  {S.RED}│{S.RESET}  Samples, macros, presets, and custom files              {S.RED}│{S.RESET}")
     print(f"  {S.RED}│{S.RESET}  will be deleted. A fresh factory SD card image          {S.RED}│{S.RESET}")
