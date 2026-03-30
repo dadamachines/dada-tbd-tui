@@ -243,6 +243,7 @@ def _restore_p4_from_msc(esptool_cmd, urls, cache_dir):
         "2. While holding BOOT, press and",
         "   release Reset (next to Port #1)",
         "3. Release BOOT",
+        "4. Press Reset once more to restart",
     ])
     ask("Press Enter when ready")
     port = select_port("Re-detecting ports for recovery")
@@ -727,13 +728,14 @@ def select_port(prompt_extra=""):
                     "Front JTAG port (USB-C #3) → computer",
                     "Back Port #1 or #2 → power supply",
                     "",
-                    "Still no port? Enter download mode:",
+                    "Still no port? Try this:",
                     "",
                     "1. Hold BOOT button on the back",
                     "   (between Port #1 and Port #2)",
                     "2. While holding BOOT, press and",
                     "   release Reset (next to Port #1)",
                     "3. Release BOOT",
+                    "4. Press Reset once more to restart",
                 ])
             else:
                 status("Still no port found", "warn")
@@ -753,27 +755,28 @@ def select_port(prompt_extra=""):
             status(f"Found port → {S.CYAN}{ports[0]}{S.RESET}{label}", "ok")
             if ask("Use this port? (y/n)", "y").lower() == "y":
                 return ports[0]
+            continue
 
-    status(f"Found {len(ports)} port(s):\n", "ok")
-    for i, p in enumerate(ports, 1):
-        label = _port_label(p)
-        print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {p}{label}")
-    print()
+        status(f"Found {len(ports)} port(s):\n", "ok")
+        for i, p in enumerate(ports, 1):
+            label = _port_label(p)
+            print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {p}{label}")
+        print()
 
-    if prompt_extra:
-        status(prompt_extra, "info")
-    status("Select the port for the front JTAG port (USB-C #3)", "info")
-    choice = ask("Port number", "1")
-    try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(ports):
-            return ports[idx]
-    except ValueError:
-        if choice.startswith("/dev/") or choice.startswith("COM"):
-            return choice
+        if prompt_extra:
+            status(prompt_extra, "info")
+        status("Select the port for the front JTAG port (USB-C #3)", "info")
+        choice = ask("Port number", "1")
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(ports):
+                return ports[idx]
+        except ValueError:
+            if choice.startswith("/dev/") or choice.startswith("COM"):
+                return choice
 
-    status("Invalid selection", "err")
-    return None
+        status("Invalid selection", "err")
+        return None
 
 
 # ═══════════════════════════════════════════════════
@@ -977,30 +980,30 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
     print()
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        # Print esptool output
-        if result.stdout:
-            print(result.stdout, end="")
-        if result.stderr:
-            print(result.stderr, end="")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        output_lines = []
+        for line in proc.stdout:
+            print(line, end="")
+            output_lines.append(line)
+        proc.wait()
         print()
         separator()
         try:
             os.unlink(ota_data_path)
         except OSError:
             pass
-        if result.returncode == 0:
+        if proc.returncode == 0:
             status("MSC firmware flashed — device will reboot into SD card mode", "ok")
             return True
-        # Detect specific errors for better guidance
-        output = (result.stdout or "") + (result.stderr or "")
+        output = "".join(output_lines)
         if "Resource busy" in output or "Errno 16" in output:
             status("Port is busy — another program may be using it", "err")
             status("Close any serial monitors, terminals, or IDEs using this port", "info")
             time.sleep(2)
         elif "No serial data" in output:
             status("No response from device — try entering download mode", "err")
-            status("Hold BOOT button → unplug/replug JTAG → release BOOT", "info")
+            status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
         else:
             status("MSC firmware flash failed — check errors above", "err")
     except Exception as e:
@@ -1044,24 +1047,26 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
     print()
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.stdout:
-            print(result.stdout, end="")
-        if result.stderr:
-            print(result.stderr, end="")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        output_lines = []
+        for line in proc.stdout:
+            print(line, end="")
+            output_lines.append(line)
+        proc.wait()
         print()
         separator()
-        if result.returncode == 0:
+        if proc.returncode == 0:
             status(f"{label} flashed successfully!", "ok")
             return True
-        output = (result.stdout or "") + (result.stderr or "")
+        output = "".join(output_lines)
         if "Resource busy" in output or "Errno 16" in output:
             status("Port is busy — another program may be using it", "err")
             status("Close any serial monitors, terminals, or IDEs using this port", "info")
             time.sleep(2)
         elif "No serial data" in output:
             status("No response from device — try entering download mode", "err")
-            status("Hold BOOT button → unplug/replug JTAG → release BOOT", "info")
+            status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
         else:
             status(f"Flashing {label} failed — check errors above", "err")
     except Exception as e:
