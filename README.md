@@ -43,8 +43,11 @@ That's it. The launcher scripts find (or help you install) Python automatically,
 # Full SD card deploy — erase & re-write SD + flash firmware
 ./flash.sh --full
 
-# Use staging/beta channel
-./flash.sh --quick --channel staging
+# Use beta channel (staging)
+./flash.sh --quick --channel beta
+
+# Use a specific feature branch
+./flash.sh --quick --channel feature-test-xyz
 ```
 
 On Windows, replace `./flash.sh` with `flash.bat`.
@@ -85,11 +88,14 @@ Erase & re-write the SD card image, then flash all firmware. Use for fresh insta
 ```
 --quick              Quick Update (P4 + Pico, no SD erase)
 --full               Full SD Deploy (SD image + P4 + Pico)
---channel {stable,staging}   Firmware channel (default: stable)
+--channel CHANNEL    Firmware channel (default: stable)
+                       stable, beta, staging, or feature-test-NAME
 --p4-only            Flash only ESP32-P4
 --pico-only          Flash only RP2350 Pico
 --install-esptool    Install/upgrade esptool
 ```
+
+**Channels:** The interactive wizard shows two channels — **Stable Channel** and **Beta Channel** — matching the [web flasher](https://dadamachines.github.io/ctag-tbd/flash/10_stable_channel.html). Beta Channel includes the latest staging build plus any active feature-test branches.
 
 ## Troubleshooting
 

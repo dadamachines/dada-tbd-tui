@@ -9,7 +9,8 @@ Usage:
     python3 flash_tool.py                    # Interactive wizard
     python3 flash_tool.py --quick            # Quick update (latest stable)
     python3 flash_tool.py --full             # Full SD card deploy (latest stable)
-    python3 flash_tool.py --channel staging  # Use staging channel
+    python3 flash_tool.py --channel staging  # Use beta channel
+    python3 flash_tool.py --channel beta     # Same as staging
     python3 flash_tool.py --help             # Show all options
 """
 
@@ -257,6 +258,19 @@ def download_file(url, dest_path, label=None):
 # ═══════════════════════════════════════════════════
 #  FIRMWARE CDN — releases.json
 # ═══════════════════════════════════════════════════
+
+def _channel_label(channel):
+    """Human-readable label for a channel name."""
+    if channel == "stable":
+        return "Stable Channel"
+    if channel == "staging":
+        return "Beta Channel (Staging)"
+    if channel.startswith("feature-test-"):
+        name = channel.replace("feature-test-", "")
+        return f"Beta Channel (Feature: {name})"
+    return channel.title()
+
+
 def fetch_releases(channel="stable"):
     """Fetch releases.json from the firmware CDN. Returns parsed JSON or None."""
     import urllib.request
@@ -272,20 +286,99 @@ def fetch_releases(channel="stable"):
 
 
 def select_channel():
-    """Let user pick stable or staging. Returns channel name."""
-    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable   {S.DIM}(recommended){S.RESET}")
-    print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Staging  {S.DIM}(pre-release / beta){S.RESET}")
+    """Let user pick stable or beta. Returns channel name string."""
+    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}")
+    print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
     print()
     c = ask("Select channel", "1")
-    return "staging" if c == "2" else "stable"
+    if c != "2":
+        return "stable"
+
+    # Beta channel — discover staging + feature branches
+    return _select_beta_channel()
 
 
-def select_version(catalog):
-    """Let user pick a firmware version from the catalog. Returns version dict."""
+def _discover_feature_branches():
+    """Discover active feature-test branches from GitHub releases API."""
+    import urllib.request
+    import urllib.error
+
+    api_url = "https://api.github.com/repos/dadamachines/ctag-tbd/releases?per_page=30"
+    try:
+        req = urllib.request.Request(api_url)
+        req.add_header("Accept", "application/vnd.github+json")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            releases = json.loads(resp.read().decode())
+    except Exception:
+        return []
+
+    import re
+    candidates = set()
+    for r in releases:
+        if not r.get("prerelease"):
+            continue
+        tag = r.get("tag_name", "")
+        m = re.match(r'^(feature-test-[a-z0-9-]+)$', tag)
+        if m and not re.search(r'-[0-9a-f]{7,}$', tag):
+            candidates.add(m.group(1))
+
+    # Verify each has a releases.json on CDN
+    verified = []
+    for name in sorted(candidates):
+        try:
+            url = f"{FIRMWARE_CDN}/{name}/releases.json"
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=5):
+                verified.append(name)
+        except Exception:
+            pass
+
+    return verified
+
+
+def _select_beta_channel():
+    """Show beta channel sub-menu: staging + feature branches."""
+    status("Discovering beta channels …", "work")
+    features = _discover_feature_branches()
+
+    print()
+    print(f"      {S.YELLOW}{S.BOLD}[1]{S.RESET}  Staging  {S.DIM}(latest pre-release){S.RESET}")
+
+    for i, name in enumerate(features, 2):
+        label = name.replace("feature-test-", "")
+        print(f"      {S.YELLOW}{S.BOLD}[{i}]{S.RESET}  Feature: {label}")
+
+    print()
+    c = ask("Select beta channel", "1")
+
+    try:
+        idx = int(c) - 1
+        if idx == 0:
+            return "staging"
+        if 0 < idx <= len(features):
+            return features[idx - 1]
+    except ValueError:
+        pass
+
+    status("Invalid selection, using staging", "warn")
+    return "staging"
+
+
+def select_version(catalog, channel="stable"):
+    """Let user pick a firmware version from the catalog. Returns version dict.
+    For non-stable channels, auto-selects the latest (only) version."""
     versions = catalog.get("versions", [])
     if not versions:
         status("No versions found in catalog!", "err")
         return None
+
+    # For beta channels (staging / feature-test), always use latest — no picker
+    if channel != "stable":
+        v = versions[0]
+        tag = v["tag"]
+        ts = v.get("timestamp", "")[:10]
+        status(f"Latest: {S.BOLD}{tag}{S.RESET}  {S.DIM}{ts}{S.RESET}", "ok")
+        return v
 
     latest_tag = catalog.get("latest", "")
 
@@ -1427,7 +1520,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
     """Quick Update wizard: Flash P4 + Pico (no SD card erase)."""
     clear()
     banner()
-    header(f"⚡ Quick Update — {channel.title()} Channel")
+    header(f"⚡ Quick Update — {_channel_label(channel)}")
 
     cache_dir = ensure_cache_dir()
 
@@ -1437,7 +1530,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
         catalog = fetch_releases(channel)
         if not catalog:
             return False
-        version = select_version(catalog)
+        version = select_version(catalog, channel)
         if not version:
             return False
 
@@ -1518,7 +1611,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     """Full SD Deploy wizard: MSC/reader → SD image → P4 + Pico."""
     clear()
     banner()
-    header(f"🗄️  Full SD Card Deploy — {channel.title()} Channel")
+    header(f"🗄️  Full SD Card Deploy — {_channel_label(channel)}")
 
     cache_dir = ensure_cache_dir()
 
@@ -1528,7 +1621,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         catalog = fetch_releases(channel)
         if not catalog:
             return False
-        version = select_version(catalog)
+        version = select_version(catalog, channel)
         if not version:
             return False
 
@@ -1754,7 +1847,7 @@ def flash_p4_only(channel="stable"):
     catalog = fetch_releases(channel)
     if not catalog:
         return False
-    version = select_version(catalog)
+    version = select_version(catalog, channel)
     if not version:
         return False
 
@@ -1800,7 +1893,7 @@ def flash_pico_only(channel="stable"):
     catalog = fetch_releases(channel)
     if not catalog:
         return False
-    version = select_version(catalog)
+    version = select_version(catalog, channel)
     if not version:
         return False
 
@@ -1819,7 +1912,7 @@ def deploy_sd_only(channel="stable"):
     catalog = fetch_releases(channel)
     if not catalog:
         return False
-    version = select_version(catalog)
+    version = select_version(catalog, channel)
     if not version:
         return False
 
@@ -2012,7 +2105,8 @@ examples:
   %(prog)s                             Interactive wizard
   %(prog)s --quick                     Quick update (latest stable)
   %(prog)s --full                      Full SD card deploy (latest stable)
-  %(prog)s --quick --channel staging   Quick update from staging channel
+  %(prog)s --quick --channel beta      Quick update from beta channel
+  %(prog)s --channel feature-test-xyz  Use a specific feature branch
   %(prog)s --p4-only                   Flash only ESP32-P4
   %(prog)s --pico-only                 Flash only RP2350 Pico
   %(prog)s --install-esptool           Install/upgrade esptool and exit
@@ -2023,8 +2117,7 @@ examples:
     p.add_argument("--full", action="store_true",
                    help="Run Full SD Deploy wizard")
     p.add_argument("--channel", type=str, default="stable",
-                   choices=["stable", "staging"],
-                   help="Firmware channel (default: stable)")
+                   help="Firmware channel: stable, beta, staging, or feature-test-NAME (default: stable)")
     p.add_argument("--p4-only", action="store_true", dest="p4_only",
                    help="Flash only ESP32-P4 firmware")
     p.add_argument("--pico-only", action="store_true", dest="pico_only",
@@ -2047,6 +2140,9 @@ def run_cli(args):
         return
 
     channel = args.channel
+    # "beta" is a shorthand — use staging (latest pre-release)
+    if channel == "beta":
+        channel = "staging"
 
     if args.quick:
         wizard_quick(channel, is_cli=True)
