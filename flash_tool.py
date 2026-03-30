@@ -236,12 +236,13 @@ def _restore_p4_from_msc(esptool_cmd, urls, cache_dir):
     print()
     status("Restoring normal boot by flashing P4 firmware …", "work")
     action_box([
-        "Power-cycle required first:",
+        "Enter download mode:",
         "",
-        "1. Unplug ALL USB cables",
-        "2. Wait 5 seconds",
-        "3. Reconnect JTAG (front, USB-C #3)",
-        "4. Reconnect a back port for power",
+        "1. Hold BOOT button on the back",
+        "   (between Port #1 and Port #2)",
+        "2. While holding BOOT, press and",
+        "   release Reset (next to Port #1)",
+        "3. Release BOOT",
     ])
     ask("Press Enter when ready")
     port = select_port("Re-detecting ports for recovery")
@@ -728,14 +729,11 @@ def select_port(prompt_extra=""):
                     "",
                     "Still no port? Enter download mode:",
                     "",
-                    "1. Unplug ALL cables from TBD-16",
-                    "2. Hold BOOT button on the back",
+                    "1. Hold BOOT button on the back",
                     "   (between Port #1 and Port #2)",
-                    "3. Keep holding BOOT — reconnect",
-                    "   the JTAG cable (front USB-C #3)",
-                    "   This powers up in download mode",
-                    "4. Release BOOT after 2 seconds",
-                    "5. Reconnect a back port for power",
+                    "2. While holding BOOT, press and",
+                    "   release Reset (next to Port #1)",
+                    "3. Release BOOT",
                 ])
             else:
                 status("Still no port found", "warn")
