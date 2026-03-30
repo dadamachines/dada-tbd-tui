@@ -1,0 +1,30 @@
+[project]
+name = "dada-tbd-tui"
+version = "0.1.0"
+description = "Terminal wizard to flash ESP32-P4 and RP2350 firmware on the dadamachines TBD-16"
+readme = "README.md"
+license = "LGPL-3.0-only"
+requires-python = ">=3.8"
+authors = [
+    { name = "Johannes Elias Lohbihler" },
+]
+
+dependencies = [
+    "esptool",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+flash-tbd = "flash_tool:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
