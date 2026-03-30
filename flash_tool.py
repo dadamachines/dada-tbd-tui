@@ -331,13 +331,13 @@ def download_file(url, dest_path, label=None, timeout=30):
         return True
     except urllib.error.HTTPError as e:
         print()
-        status(f"Download failed: HTTP {e.code} — {e.reason}", "err")
+        status(f"[E101] Download failed: HTTP {e.code} — {e.reason}", "err")
     except urllib.error.URLError as e:
         print()
-        status(f"Download failed: {e.reason}", "err")
-    except Exception as e:
+        status(f"[E102] Download failed: {e.reason}", "err")
+    except OSError as e:
         print()
-        status(f"Download failed: {e}", "err")
+        status(f"[E103] Download failed: {e}", "err")
     return False
 
 
@@ -371,7 +371,7 @@ def fetch_releases(channel="stable"):
             if attempt < 3:
                 status(f"Could not fetch releases (attempt {attempt}/3): {e}", "warn")
                 time.sleep(attempt * 2)
-    status(f"Could not fetch releases for '{channel}' after 3 attempts", "err")
+    status(f"[E104] Could not fetch releases for '{channel}' after 3 attempts", "err")
     return None
 
 
@@ -459,7 +459,7 @@ def select_version(catalog, channel="stable"):
     For non-stable channels, auto-selects the latest (only) version."""
     versions = catalog.get("versions", [])
     if not versions:
-        status("No versions found in catalog!", "err")
+        status("[E105] No versions found in catalog!", "err")
         return None
 
     # For beta channels (staging / feature-test), always use latest — no picker
@@ -520,7 +520,7 @@ def check_python():
     if v.major >= 3 and v.minor >= 8:
         status(f"Python {v.major}.{v.minor}.{v.micro}", "ok")
         return True
-    status(f"Python 3.8+ required (found {v.major}.{v.minor})", "err")
+    status(f"[E201] Python 3.8+ required (found {v.major}.{v.minor})", "err")
     return False
 
 
@@ -539,7 +539,7 @@ def _try_esptool(python_cmd):
             capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
             return r.stdout.strip().splitlines()[0]
-    except (FileNotFoundError, Exception):
+    except (subprocess.SubprocessError, OSError):
         pass
     return None
 
@@ -568,7 +568,7 @@ def find_esptool():
             ver = r.stdout.strip().splitlines()[0]
             status(f"esptool: {ver} (system)", "ok")
             return ["esptool.py"]
-    except (FileNotFoundError, Exception):
+    except (subprocess.SubprocessError, OSError):
         pass
 
     return None
@@ -584,7 +584,7 @@ def install_esptool():
             import venv
             venv.create(VENV_DIR, with_pip=True)
             status("Virtual environment created", "ok")
-        except Exception:
+        except (ImportError, OSError):
             # Fallback: use subprocess
             try:
                 r = subprocess.run(
@@ -594,19 +594,19 @@ def install_esptool():
                     err_msg = r.stderr.strip()
                     # Detect missing python3-venv on Debian/Ubuntu
                     if "ensurepip" in err_msg or "No module named" in err_msg:
-                        status("Python venv module is not installed", "err")
+                        status("[E202] Python venv module is not installed", "err")
                         if platform.system() == "Linux":
                             status("Fix with:", "info")
                             status(f"  sudo apt install python3-venv   {S.DIM}(Debian/Ubuntu){S.RESET}", "info")
                             status(f"  sudo dnf install python3-libs   {S.DIM}(Fedora/RHEL){S.RESET}", "info")
                         else:
-                            status(f"Error: {err_msg}", "err")
+                            status(f"[E202] Error: {err_msg}", "err")
                         return False
-                    status(f"Could not create venv: {err_msg}", "err")
+                    status(f"[E203] Could not create venv: {err_msg}", "err")
                     return False
                 status("Virtual environment created", "ok")
-            except Exception as e:
-                status(f"Could not create venv: {e}", "err")
+            except (subprocess.SubprocessError, OSError) as e:
+                status(f"[E203] Could not create venv: {e}", "err")
                 return False
 
     status("Installing esptool …", "work")
@@ -620,11 +620,11 @@ def install_esptool():
         if r.returncode == 0:
             status("esptool installed!", "ok")
             return True
-        status("pip install failed (see output above)", "err")
+        status("[E204] pip install failed (see output above)", "err")
     except subprocess.TimeoutExpired:
-        status("Installation timed out", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+        status("[E205] Installation timed out", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E206] esptool install error: {e}", "err")
     return False
 
 
@@ -683,7 +683,7 @@ def select_port(prompt_extra=""):
         ports = find_serial_ports()
 
         if not ports:
-            status("No serial devices found", "err")
+            status("[E207] No serial devices found", "err")
             action_box([
                 "Make sure the TBD-16 is connected:",
                 "",
@@ -726,7 +726,7 @@ def select_port(prompt_extra=""):
         if choice.startswith("/dev/") or choice.startswith("COM"):
             return choice
 
-    status("Invalid selection", "err")
+    status("[E208] Invalid selection", "err")
     return None
 
 
@@ -792,7 +792,7 @@ def read_partition_table(esptool_cmd, port):
         except OSError:
             pass
         return parse_partition_table(data)
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         try:
             os.unlink(pt_file)
         except OSError:
@@ -870,7 +870,7 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
     4. Hard-resets so the device boots into SD-card USB mode
     """
     if not os.path.exists(msc_path):
-        status(f"MSC firmware not found: {msc_path}", "err")
+        status(f"[E301] MSC firmware not found: {msc_path}", "err")
         return False
 
     # ── Detect ota_1 address from device partition table ──
@@ -886,7 +886,7 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
         # Sanity check: MSC firmware must fit in the partition
         msc_size = os.path.getsize(msc_path)
         if msc_size > ota1_size:
-            status(f"MSC firmware ({msc_size} bytes) exceeds ota_1 partition "
+            status(f"[E302] MSC firmware ({msc_size} bytes) exceeds ota_1 partition "
                    f"({ota1_size} bytes)!", "err")
             return False
     else:
@@ -941,9 +941,9 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
         if rc == 0:
             status("MSC firmware flashed — device will reboot into SD card mode", "ok")
             return True
-        status("MSC firmware flash failed — check errors above", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+        status("[E303] MSC firmware flash failed — check errors above", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E304] MSC flash error: {e}", "err")
     return False
 
 
@@ -955,7 +955,7 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
     is needed — it would cause an overlap error in esptool.
     """
     if not os.path.exists(firmware_path):
-        status(f"Firmware file not found: {firmware_path}", "err")
+        status(f"[E305] Firmware file not found: {firmware_path}", "err")
         return False
 
     size_mb = os.path.getsize(firmware_path) / 1048576
@@ -989,9 +989,9 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
         if rc == 0:
             status(f"{label} flashed successfully!", "ok")
             return True
-        status(f"Flashing {label} failed — check errors above", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+        status(f"[E306] Flashing {label} failed — check errors above", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E307] Flash error: {e}", "err")
     return False
 
 
@@ -1046,7 +1046,7 @@ def wait_for_uf2_volume(timeout=UF2_MOUNT_TIMEOUT):
         time.sleep(1)
 
     print()
-    status("UF2 volume not found within timeout", "err")
+    status("[E308] UF2 volume not found within timeout", "err")
     return None
 
 
@@ -1061,8 +1061,8 @@ def flash_uf2(uf2_path, volume):
         time.sleep(2)
         status("UF2 copied — RP2350 will reboot automatically", "ok")
         return True
-    except Exception as e:
-        status(f"Failed to copy UF2: {e}", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E309] Failed to copy UF2: {e}", "err")
         return False
 
 
@@ -1392,7 +1392,7 @@ def wait_for_sd_card(timeout=SD_MOUNT_TIMEOUT):
         time.sleep(2)
 
     print()
-    status("SD card not found within timeout", "err")
+    status("[E401] SD card not found within timeout", "err")
     return None
 
 
@@ -1406,7 +1406,7 @@ def erase_sd_card(mount_point):
     # SAFETY GATE: Multi-layer validation before any deletion
     safe, reason = _is_safe_to_erase(mount_point)
     if not safe:
-        status(f"REFUSED to erase: {reason}", "err")
+        status(f"[E402] REFUSED to erase: {reason}", "err")
         return False
 
     vol_info = _get_volume_info(mount_point)
@@ -1438,8 +1438,8 @@ def erase_sd_card(mount_point):
         else:
             status("SD card erased", "ok")
         return True
-    except Exception as e:
-        status(f"Error erasing SD card: {e}", "err")
+    except OSError as e:
+        status(f"[E403] Error erasing SD card: {e}", "err")
         return False
 
 
@@ -1452,7 +1452,7 @@ def extract_sd_image(zip_path, mount_point):
             # Verify integrity before extraction (catches corrupted downloads)
             bad = zf.testzip()
             if bad is not None:
-                status(f"Zip integrity check failed — corrupted entry: {bad}", "err")
+                status(f"[E404] Zip integrity check failed — corrupted entry: {bad}", "err")
                 status("Delete the cached file and re-download:", "info")
                 status(f"  rm {zip_path}", "info")
                 return False
@@ -1507,10 +1507,10 @@ def extract_sd_image(zip_path, mount_point):
 
     except zipfile.BadZipFile:
         print()
-        status("Downloaded file is not a valid zip — try re-downloading", "err")
-    except Exception as e:
+        status("[E405] Downloaded file is not a valid zip — try re-downloading", "err")
+    except OSError as e:
         print()
-        status(f"Extraction failed: {e}", "err")
+        status(f"[E406] Extraction failed: {e}", "err")
     return False
 
 
@@ -1867,7 +1867,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                                 status("Normal boot restored!", "ok")
                                 status("You can now retry Full SD Card Deploy or use Quick Update", "info")
                             else:
-                                status("Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
+                                status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
                     print()
                     ask("Press Enter to return to menu")
                     return False
@@ -1910,7 +1910,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                     if not sd_mount:
                         sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
                         if not os.path.isdir(sd_mount):
-                            status(f"Directory not found: {sd_mount}", "err")
+                            status(f"[E407] Directory not found: {sd_mount}", "err")
                             return False
                     # Fall through to SD write step below
                     break
@@ -1934,7 +1934,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         if not sd_mount:
             sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
             if not os.path.isdir(sd_mount):
-                status(f"Directory not found: {sd_mount}", "err")
+                status(f"[E407] Directory not found: {sd_mount}", "err")
                 return False
 
     # ── Write SD card image ──
@@ -1949,7 +1949,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     status(f"  Device:     {vol_info['device']}", "info")
 
     if not urls.get("sd_url"):
-        status("No SD card image available for this version!", "err")
+        status("[E106] No SD card image available for this version!", "err")
         return False
 
     sd_zip_name = os.path.basename(urls["sd_url"])
@@ -2117,7 +2117,7 @@ def deploy_sd_only(channel="stable"):
     urls = build_urls(version, channel)
 
     if not urls.get("sd_url"):
-        status("No SD card image available for this version", "err")
+        status("[E106] No SD card image available for this version", "err")
         return False
 
     # SD access method
@@ -2180,7 +2180,7 @@ def deploy_sd_only(channel="stable"):
         if not sd_mount:
             sd_mount = ask("Enter SD card mount path")
             if not os.path.isdir(sd_mount):
-                status(f"Not found: {sd_mount}", "err")
+                status(f"[E407] Not found: {sd_mount}", "err")
                 return False
 
     # Download SD image
@@ -2292,7 +2292,7 @@ def main_menu():
             ask("\nPress Enter to return to menu")
 
         else:
-            status("Invalid choice", "err")
+            status("[E501] Invalid choice", "err")
             time.sleep(0.5)
 
 
