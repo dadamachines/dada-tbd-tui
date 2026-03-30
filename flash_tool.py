@@ -296,7 +296,7 @@ def ensure_cache_dir():
     return CACHE_DIR
 
 
-def download_file(url, dest_path, label=None):
+def download_file(url, dest_path, label=None, timeout=30):
     """Download a file with progress bar. Returns True on success."""
     import urllib.request
     import urllib.error
@@ -306,11 +306,20 @@ def download_file(url, dest_path, label=None):
     status(f"URL → {S.DIM}{url}{S.RESET}", "info")
 
     try:
-        def hook(blk, blk_sz, total):
-            progress_bar(blk * blk_sz, total)
-
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        urllib.request.urlretrieve(url, dest_path, reporthook=hook)
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 64 * 1024
+            with open(dest_path, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        progress_bar(downloaded, total)
         print()
         size_kb = os.path.getsize(dest_path) / 1024
         if size_kb > 1024:

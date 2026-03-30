@@ -66,7 +66,7 @@ status(f"Found {len(ports)} port(s):\n", "ok")  # UNREACHABLE
 
 ### Medium Priority
 
-#### 4. `urllib.request.urlretrieve` is deprecated
+#### (done) 4. `urllib.request.urlretrieve` is deprecated
 **Location:** line 313
 **Issue:** `urlretrieve` has been informally deprecated since Python 3.x and may be removed in future versions. It also doesn't support timeouts on the download itself (only the initial connection via the global socket timeout).
 **Recommendation:** Replace with `urllib.request.urlopen` + chunked read into a file. This also enables proper timeout control and more predictable progress reporting.
