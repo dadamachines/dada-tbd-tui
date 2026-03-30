@@ -166,18 +166,18 @@ PORT_RECOVERY_TIPS = [
 def power_cycle_warning():
     """Display prominent power-cycle instructions. Call at end of every wizard."""
     print()
-    print(f"  {S.RED}{S.BOLD}╔═══════════════════════════════════════════════════════════╗{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║   ⚠  IMPORTANT: Power-cycle your device to finish!  ⚠     ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║   1. Disconnect ALL USB cables                            ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║   2. Wait 5 seconds                                       ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║   3. Reconnect ONLY back Port #1                          ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║      (power + USB Ethernet + MIDI)                        ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║   The device will NOT boot until power-cycled!            ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.RED}{S.BOLD}╚═══════════════════════════════════════════════════════════╝{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}╔═══════════════════════════════════════════════════════════╗{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║   ⚠  IMPORTANT: Power-cycle your device to finish!  ⚠     ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║   1. Disconnect ALL USB cables                            ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║   2. Wait 5 seconds                                       ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║   3. Reconnect ONLY back Port #1                          ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║      (power + USB Ethernet + MIDI)                        ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║   The device will NOT boot until power-cycled!            ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}╚═══════════════════════════════════════════════════════════╝{S.RESET}")
     print()
     print(f"  {S.CYAN}{S.BOLD}  Then open the WebUI:{S.RESET}")
     print()
@@ -192,7 +192,7 @@ def power_cycle_warning():
     else:
         print(f"  {S.DIM}  (Ctrl+click the link, or copy it into your browser){S.RESET}")
     print()
-    print(f"  {S.GREEN}{S.BOLD}  Have fun with your dadamachines TBD-16! 🎶{S.RESET}")
+    print(f"  {S.WHITE}{S.BOLD}  Have fun with your dadamachines TBD-16! 🎶{S.RESET}")
     print()
 
 
@@ -888,11 +888,11 @@ def wizard_flash_pico(urls, cache_dir):
     status(f"{S.BOLD}Flash RP2350 (Pico) Firmware{S.RESET}", "step")
     print()
     status("Hardware setup:", "info")
-    status(f"  1. Connect {S.BOLD}back USB-C Port #2{S.RESET} (closest to the edge)", "info")
-    status(f"  2. You can disconnect the front JTAG cable", "info")
-    status(f"  3. Put RP2350 in {S.BOLD}BOOTSEL mode{S.RESET}:", "info")
-    status(f"     Hold BOOTSEL button → press RESET on front panel → release BOOTSEL", "info")
+    status(f"  1. Hold the {S.BOLD}BOOTSEL button{S.RESET} (left of JTAG port on front panel)", "info")
+    status(f"  2. While holding BOOTSEL, plug {S.BOLD}back USB-C Port #2{S.RESET} (closest to the edge)", "info")
+    status(f"  3. Release the BOOTSEL button", "info")
     status(f"  4. A drive named 'RP2350' or 'RPI-RP2' should appear on your computer", "info")
+    status(f"  You can disconnect the front JTAG cable — it's not needed for this step", "info")
     print()
 
     if ask("Ready? (y/n)", "y").lower() != "y":
@@ -914,7 +914,7 @@ def wizard_flash_pico(urls, cache_dir):
         print()
         status("No UF2 volume detected yet.", "warn")
         status("Make sure RP2350 is in BOOTSEL mode:", "info")
-        status("  Hold BOOTSEL → press RESET → release BOOTSEL", "info")
+        status("  Hold BOOTSEL button → plug USB-C Port #2 → release button", "info")
         print()
 
         if ask("Wait for volume? (y/n)", "y").lower() != "y":
@@ -1505,7 +1505,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
     # ── Done ──
     print()
     separator()
-    print(f"\n  {S.GREEN}{S.BOLD}✓ dadamachines TBD-16 — Quick Update Complete!{S.RESET}\n")
+    print(f"\n  {S.WHITE}{S.BOLD}✓ dadamachines TBD-16 — Quick Update Complete!{S.RESET}\n")
     status(f"Firmware: {S.BOLD}{tag}{S.RESET}", "ok")
     power_cycle_warning()
     return True
@@ -1737,7 +1737,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     # ── Done ──
     print()
     separator()
-    print(f"\n  {S.GREEN}{S.BOLD}✓ dadamachines TBD-16 — Full SD Card Deploy Complete!{S.RESET}\n")
+    print(f"\n  {S.WHITE}{S.BOLD}✓ dadamachines TBD-16 — Full SD Card Deploy Complete!{S.RESET}\n")
     status(f"Firmware: {S.BOLD}{tag}{S.RESET}", "ok")
     power_cycle_warning()
     return True
