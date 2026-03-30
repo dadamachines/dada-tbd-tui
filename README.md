@@ -107,10 +107,12 @@ Erase & re-write the SD card image, then flash all firmware. Use for fresh insta
 |---------|-----|
 | `Python not found` | Install Python 3.8+ — the launcher scripts will guide you |
 | `ensurepip is not available` (Linux) | `sudo apt install python3-venv` (Debian/Ubuntu) or `sudo dnf install python3-libs` (Fedora) |
-| No serial port detected | Make sure the **front JTAG USB-C port** is connected and try "Scan again" |
-| `No serial data received` | Try the other USB port, or a different cable |
+| No serial port detected | Make sure the **front JTAG USB-C port** is connected. If the port still doesn't appear, hold the **BOOT button** (on the back, between Port #1 and #2) while plugging in the JTAG cable |
+| `No serial data received` | Try the other USB port, or a different cable. Hold the BOOT button while plugging in |
 | Flash fails / timeout | Re-run — the tool retries automatically. Power-cycle the TBD-16 if stuck |
-| SD card not appearing | Wait 20–30 seconds after MSC mode flash. Check back USB-C port #1 is connected |
+| SD card not appearing (MSC mode) | Wait 20–30 seconds. Check back Port #1 is connected. Try a powered USB hub (older Macs may have weak USB power) |
+| Device stuck in MSC mode | The tool will offer to flash P4 firmware to recover. Or use menu option **[3] Flash ESP32-P4 only** |
+| Colors hard to read | macOS Terminal.app uses a white background by default. The tool auto-detects this and adjusts colors. If colors are still hard to read, switch to a dark terminal profile |
 | Device crashes after SD update | macOS `._` dot-files — the tool cleans these automatically. Re-run Full SD Deploy if needed |
 
 ## Firmware Source

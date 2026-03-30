@@ -73,17 +73,54 @@ PROTECTED_PATHS = {
 # ═══════════════════════════════════════════════════
 #  ANSI STYLING
 # ═══════════════════════════════════════════════════
+def _detect_light_background():
+    """Heuristic: detect if the terminal has a light background.
+
+    Checks COLORFGBG (set by many terminals), and falls back to
+    macOS Terminal.app defaults (white background unless overridden).
+    """
+    # COLORFGBG is "fg;bg" — bg >= 8 is usually light
+    colorfgbg = os.environ.get("COLORFGBG", "")
+    if colorfgbg:
+        try:
+            bg = int(colorfgbg.rsplit(";", 1)[-1])
+            return bg >= 8 or bg == 7  # 7=white, 8+=bright
+        except (ValueError, IndexError):
+            pass
+    # macOS Terminal.app defaults to white background
+    if platform.system() == "Darwin":
+        term = os.environ.get("TERM_PROGRAM", "")
+        if term == "Apple_Terminal":
+            return True
+    return False
+
+
+_LIGHT_BG = _detect_light_background()
+
+
 class S:
     RESET   = "\033[0m"
     BOLD    = "\033[1m"
-    DIM     = "\033[90m"
-    RED     = "\033[91m"
-    GREEN   = "\033[92m"
-    YELLOW  = "\033[93m"
-    BLUE    = "\033[94m"
-    MAGENTA = "\033[95m"
-    CYAN    = "\033[96m"
-    WHITE   = "\033[97m"
+    if _LIGHT_BG:
+        # Standard (dark) colors — readable on white/light backgrounds
+        DIM     = "\033[37m"       # light gray text
+        RED     = "\033[31m"
+        GREEN   = "\033[32m"
+        YELLOW  = "\033[33m"
+        BLUE    = "\033[34m"
+        MAGENTA = "\033[35m"
+        CYAN    = "\033[36m"
+        WHITE   = "\033[30m"       # black text on light bg
+    else:
+        # Bright colors — readable on dark/black backgrounds
+        DIM     = "\033[90m"       # bright black (gray)
+        RED     = "\033[91m"
+        GREEN   = "\033[92m"
+        YELLOW  = "\033[93m"
+        BLUE    = "\033[94m"
+        MAGENTA = "\033[95m"
+        CYAN    = "\033[96m"
+        WHITE   = "\033[97m"
 
 
 # ═══════════════════════════════════════════════════
@@ -643,6 +680,10 @@ def select_port(prompt_extra=""):
                 "",
                 "Front JTAG port (USB-C #3) → your computer",
                 "Back Port #1 or #2 → power",
+                "",
+                "If the port still doesn't appear:",
+                "Hold the BOOT button (back, between",
+                "Port #1 and #2) while plugging in JTAG.",
             ])
             choice = ask("Enter port path, 'r' to scan again, or Enter to cancel")
             if not choice:
@@ -1774,8 +1815,100 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                 "Check back Port #1 is connected to your computer",
                 "Unplug and replug back Port #1, wait 30 seconds",
                 "Try a different USB port on your computer",
+                "Try a powered USB hub (older Macs may have weak USB power)",
             ]):
-                return False
+                # ── CRITICAL: device is stuck in MSC mode (ota_1) ──
+                print()
+                print(f"  {S.RED}┌─────────────────────────────────────────────────────────┐{S.RESET}")
+                print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  Device is in MSC mode — needs recovery!{S.RESET}          {S.RED}│{S.RESET}")
+                print(f"  {S.RED}│{S.RESET}                                                         {S.RED}│{S.RESET}")
+                print(f"  {S.RED}│{S.RESET}  The device is currently booting into SD card mode.     {S.RED}│{S.RESET}")
+                print(f"  {S.RED}│{S.RESET}  Normal operation will NOT work until P4 firmware       {S.RED}│{S.RESET}")
+                print(f"  {S.RED}│{S.RESET}  is re-flashed to restore the main boot partition.     {S.RED}│{S.RESET}")
+                print(f"  {S.RED}└─────────────────────────────────────────────────────────┘{S.RESET}")
+                print()
+                print(f"  {S.BOLD}Options:{S.RESET}")
+                print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}Flash P4 firmware now{S.RESET} to restore normal boot  {S.GREEN}◄{S.RESET}")
+                print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Use external card reader instead")
+                print(f"      {S.RED}{S.BOLD}[3]{S.RESET}  Exit {S.DIM}(device stays in MSC mode!){S.RESET}")
+                print()
+                recovery = ask("Select recovery option", "1")
+                if recovery == "1":
+                    # Flash P4 firmware to restore ota_0 boot
+                    print()
+                    status("Restoring normal boot by flashing P4 firmware …", "work")
+                    action_box([
+                        "Power-cycle the device first:",
+                        "",
+                        "1. Unplug ALL USB cables",
+                        "2. Wait 5 seconds",
+                        "3. Reconnect JTAG (front, USB-C #3)",
+                        "4. Reconnect a back port for power",
+                    ])
+                    ask("Press Enter when ready")
+                    port = select_port("Re-detecting ports for recovery")
+                    if port:
+                        p4_name = os.path.basename(urls["p4_url"])
+                        p4_path = os.path.join(cache_dir, p4_name)
+                        if not os.path.exists(p4_path):
+                            download_file(urls["p4_url"], p4_path, "P4 firmware")
+                        if os.path.exists(p4_path):
+                            print()
+                            if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
+                                status("Normal boot restored!", "ok")
+                                status("You can now retry Full SD Card Deploy or use Quick Update", "info")
+                            else:
+                                status("Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
+                    print()
+                    ask("Press Enter to return to menu")
+                    return False
+                elif recovery == "2":
+                    # Switch to external card reader flow
+                    use_msc = False
+                    status("Switching to external card reader method …", "info")
+                    # Still need to recover from MSC mode first
+                    print()
+                    status("First, let's restore normal boot …", "work")
+                    action_box([
+                        "Power-cycle the device first:",
+                        "",
+                        "1. Unplug ALL USB cables",
+                        "2. Wait 5 seconds",
+                        "3. Reconnect JTAG (front, USB-C #3)",
+                        "4. Reconnect a back port for power",
+                    ])
+                    ask("Press Enter when ready")
+                    port = select_port("Re-detecting ports for recovery")
+                    if port:
+                        p4_name = os.path.basename(urls["p4_url"])
+                        p4_path = os.path.join(cache_dir, p4_name)
+                        if not os.path.exists(p4_path):
+                            download_file(urls["p4_url"], p4_path, "P4 firmware")
+                        if os.path.exists(p4_path):
+                            print()
+                            flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)")
+
+                    # Continue with card reader flow
+                    step_n += 1
+                    step_header(step_n, total_steps, "Mount SD Card via Card Reader")
+                    action_box([
+                        "1. Power off the TBD-16 (disconnect all cables)",
+                        "2. Open the device and remove the SD card",
+                        "3. Insert the SD card into your card reader",
+                    ])
+                    ask("Press Enter when the SD card is mounted")
+                    sd_mount = find_sd_card()
+                    if not sd_mount:
+                        sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
+                        if not os.path.isdir(sd_mount):
+                            status(f"Directory not found: {sd_mount}", "err")
+                            return False
+                    # Fall through to SD write step below
+                    break
+                else:
+                    status("Exiting — device is still in MSC mode!", "warn")
+                    status("To recover: use menu option [3] Flash ESP32-P4 only", "info")
+                    return False
             sd_mount = wait_for_sd_card()
     else:
         step_n += 1
