@@ -743,27 +743,32 @@ def select_port(prompt_extra=""):
             status(f"Found port → {S.CYAN}{ports[0]}{S.RESET}{label}", "ok")
             if ask("Use this port? (y/n)", "y").lower() == "y":
                 return ports[0]
+            # User rejected the single port — rescan
+            print()
+            continue
 
-    status(f"Found {len(ports)} port(s):\n", "ok")
-    for i, p in enumerate(ports, 1):
-        label = _port_label(p)
-        print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {p}{label}")
-    print()
+        # Multiple ports found — let user pick
+        status(f"Found {len(ports)} port(s):", "ok")
+        print()
+        for i, p in enumerate(ports, 1):
+            label = _port_label(p)
+            print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {p}{label}")
+        print()
 
-    if prompt_extra:
-        status(prompt_extra, "info")
-    status("Select the port for the front JTAG port (USB-C #3)", "info")
-    choice = ask("Port number", "1")
-    try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(ports):
-            return ports[idx]
-    except ValueError:
-        if choice.startswith("/dev/") or choice.startswith("COM"):
-            return choice
+        if prompt_extra:
+            status(prompt_extra, "info")
+        status("Select the port for the front JTAG port (USB-C #3)", "info")
+        choice = ask("Port number", "1")
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(ports):
+                return ports[idx]
+        except ValueError:
+            if choice.startswith("/dev/") or choice.startswith("COM"):
+                return choice
 
-    status("[E208] Invalid selection", "err")
-    return None
+        status("[E208] Invalid selection", "err")
+        return None
 
 
 # ═══════════════════════════════════════════════════
@@ -2264,10 +2269,43 @@ def deploy_sd_only(channel="stable"):
     completion_banner("SD Card Image Deployed!")
 
     if use_msc:
-        print(f"  {S.YELLOW}{S.BOLD}  ⚠  Device is still in MSC mode!{S.RESET}")
-        print(f"  {S.YELLOW}  You MUST flash P4 firmware to restore normal boot.{S.RESET}")
-        print(f"  {S.YELLOW}  Return to the menu and use [1] Quick Update or [3] Flash P4 Only{S.RESET}")
         print()
+        print(f"  {S.YELLOW}{S.BOLD}  ⚠  Device is still in MSC mode!{S.RESET}")
+        print(f"  {S.YELLOW}  Normal operation will NOT work until P4 firmware is flashed.{S.RESET}")
+        print()
+        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}Flash P4 firmware now{S.RESET} to restore normal boot  {S.GREEN}◄{S.RESET}")
+        print(f"      {S.RED}{S.BOLD}[2]{S.RESET}  Skip {S.DIM}(device stays in MSC mode!){S.RESET}")
+        print()
+        if ask("Select", "1") == "1":
+            action_box([
+                "Power-cycle required before flashing:",
+                "",
+                "1. Unplug ALL back USB cables",
+                "2. Wait 3 seconds",
+                "3. Replug back port",
+                "",
+                "Keep front JTAG port connected.",
+            ])
+            ask("Press Enter when ready")
+            port = select_port("Re-detecting ports for recovery")
+            if port:
+                p4_name = os.path.basename(urls["p4_url"])
+                p4_path = os.path.join(cache_dir, p4_name)
+                if not is_valid_cached_file(p4_path):
+                    download_file(urls["p4_url"], p4_path, "P4 firmware")
+                if is_valid_cached_file(p4_path):
+                    print()
+                    if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
+                        status("Normal boot restored!", "ok")
+                        completion_banner("SD Deploy + P4 Recovery Complete!")
+                        power_cycle_warning()
+                        return True
+                    else:
+                        status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
+        else:
+            status("Skipping P4 flash — device stays in MSC mode!", "warn")
+            status("Use menu option [1] Quick Update or [3] Flash P4 Only to recover", "info")
+            print()
 
     return True
 
