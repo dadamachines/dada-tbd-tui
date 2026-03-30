@@ -143,6 +143,23 @@ def step_header(step, total, title):
     print()
 
 
+def action_box(lines):
+    """Display a yellow-bordered box for user actions that require physical steps."""
+    w = 55
+    print()
+    print(f"  {S.YELLOW}┌{'─' * w}┐{S.RESET}")
+    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}👉 ACTION REQUIRED{S.RESET}{' ' * (w - 20)}{S.YELLOW}│{S.RESET}")
+    print(f"  {S.YELLOW}│{' ' * w}│{S.RESET}")
+    for line in lines:
+        padding = w - 2 - len(line)
+        if padding < 0:
+            padding = 0
+        print(f"  {S.YELLOW}│{S.RESET}  {S.WHITE}{line}{S.RESET}{' ' * padding}{S.YELLOW}│{S.RESET}")
+    print(f"  {S.YELLOW}│{' ' * w}│{S.RESET}")
+    print(f"  {S.YELLOW}└{'─' * w}┘{S.RESET}")
+    print()
+
+
 def _retry_prompt(step_name, tips=None):
     """Ask user to retry a failed step. Returns True to retry, False to abort."""
     print()
@@ -620,11 +637,12 @@ def select_port(prompt_extra=""):
 
         if not ports:
             status("No serial devices found", "err")
-            print()
-            status("Make sure the TBD-16 is connected:", "info")
-            status(f"  • {S.BOLD}Front JTAG port (USB-C #3){S.RESET} → your computer", "info")
-            status(f"  • {S.BOLD}Back Port #1 or #2{S.RESET} → power", "info")
-            print()
+            action_box([
+                "Make sure the TBD-16 is connected:",
+                "",
+                "Front JTAG port (USB-C #3) → your computer",
+                "Back Port #1 or #2 → power",
+            ])
             choice = ask("Enter port path, 'r' to scan again, or Enter to cancel")
             if not choice:
                 return None
@@ -1006,14 +1024,15 @@ def wizard_flash_pico(urls, cache_dir):
 
     print()
     status(f"{S.BOLD}Flash RP2350 (Pico) Firmware{S.RESET}", "step")
-    print()
-    status("Hardware setup:", "info")
-    status(f"  1. Hold the {S.BOLD}BOOTSEL button{S.RESET} (left of JTAG port on front panel)", "info")
-    status(f"  2. While holding BOOTSEL, plug {S.BOLD}back USB-C Port #2{S.RESET} (closest to the edge)", "info")
-    status(f"  3. Release the BOOTSEL button", "info")
-    status(f"  4. A drive named 'RP2350' or 'RPI-RP2' should appear on your computer", "info")
-    status(f"  You can disconnect the front JTAG cable — it's not needed for this step", "info")
-    print()
+    action_box([
+        "1. Hold the BOOTSEL button (left of JTAG port)",
+        "2. While holding, plug back USB-C Port #2",
+        "   (closest to the edge)",
+        "3. Release the BOOTSEL button",
+        "4. A drive 'RP2350' or 'RPI-RP2' should appear",
+        "",
+        "You can disconnect the front JTAG cable.",
+    ])
 
     if ask("Ready? (y/n)", "y").lower() != "y":
         status("Skipping Pico flash", "warn")
@@ -1591,11 +1610,10 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
     # ── Step 2: Flash ESP32-P4 ──
     step_header(2, total_steps, "Flash ESP32-P4 Firmware")
 
-    print()
-    status("Hardware setup:", "info")
-    status(f"  • Connect {S.BOLD}front JTAG port{S.RESET} (USB-C #3) → your computer", "info")
-    status(f"  • Connect {S.BOLD}back Port #1 or #2{S.RESET} → power", "info")
-    print()
+    action_box([
+        "Connect front JTAG port (USB-C #3) → computer",
+        "Connect back Port #1 or #2 → power",
+    ])
 
     if not is_cli:
         if ask("Ready? (y/n)", "y").lower() != "y":
@@ -1706,11 +1724,11 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         step_n += 1
         step_header(step_n, total_steps, "Flash MSC Firmware & Mount SD Card")
 
-        print()
-        status("Hardware setup:", "info")
-        status(f"  • Connect {S.BOLD}front JTAG port{S.RESET} (USB-C #3) → your computer", "info")
-        status(f"  • Connect {S.BOLD}back Port #1{S.RESET} → your computer (power + SD card access)", "info")
-        print()
+        action_box([
+            "Connect front JTAG port (USB-C #3) → computer",
+            "Connect back Port #1 → computer",
+            "  (power + SD card access)",
+        ])
 
         if not is_cli:
             if ask("Ready? (y/n)", "y").lower() != "y":
@@ -1758,12 +1776,11 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         step_n += 1
         step_header(step_n, total_steps, "Mount SD Card via Card Reader")
 
-        print()
-        status("Please:", "info")
-        status("  1. Power off the TBD-16 (disconnect all cables)", "info")
-        status("  2. Open the device and remove the SD card", "info")
-        status("  3. Insert the SD card into your card reader", "info")
-        print()
+        action_box([
+            "1. Power off the TBD-16 (disconnect all cables)",
+            "2. Open the device and remove the SD card",
+            "3. Insert the SD card into your card reader",
+        ])
         ask("Press Enter when the SD card is mounted")
 
         sd_mount = find_sd_card()
@@ -1820,12 +1837,15 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     step_header(step_n, total_steps, "Flash ESP32-P4 Firmware")
 
     if use_msc:
-        print()
-        status("Now flashing P4 firmware (replaces MSC, restores normal boot).", "info")
-        status("Keep front JTAG port connected.", "info")
-        print()
-        status(f"{S.BOLD}Power-cycle:{S.RESET} unplug all back ports → wait 3 seconds → replug", "info")
-        print()
+        action_box([
+            "Power-cycle required before flashing:",
+            "",
+            "1. Unplug ALL back USB cables",
+            "2. Wait 3 seconds",
+            "3. Replug back port",
+            "",
+            "Keep front JTAG port connected.",
+        ])
         ask("Press Enter when ready")
 
     p4_name = os.path.basename(urls["p4_url"])
@@ -1893,9 +1913,10 @@ def flash_p4_only(channel="stable"):
         status(f"Using cached: {p4_name}", "ok")
 
     print()
-    status(f"Connect {S.BOLD}front JTAG port{S.RESET} (USB-C #3) + "
-           f"{S.BOLD}back Port #1 or #2{S.RESET} for power.", "info")
-    print()
+    action_box([
+        "Connect front JTAG port (USB-C #3) \u2192 computer",
+        "Connect back Port #1 or #2 \u2192 power",
+    ])
 
     port = select_port()
     if not port:
@@ -1975,9 +1996,11 @@ def deploy_sd_only(channel="stable"):
                 return False
 
         print()
-        status(f"Connect {S.BOLD}front JTAG port{S.RESET} + "
-               f"{S.BOLD}back Port #1{S.RESET} (power + SD card access)", "info")
-        print()
+        action_box([
+            "Connect front JTAG port (USB-C #3) \u2192 computer",
+            "Connect back Port #1 \u2192 computer",
+            "  (power + SD card access)",
+        ])
 
         port = select_port()
         if not port:
@@ -2002,8 +2025,9 @@ def deploy_sd_only(channel="stable"):
                 return False
             sd_mount = wait_for_sd_card()
     else:
-        print()
-        status("Insert SD card into your card reader", "info")
+        action_box([
+            "Insert SD card into your card reader",
+        ])
         ask("Press Enter when mounted")
         sd_mount = find_sd_card()
         if not sd_mount:
