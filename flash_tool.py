@@ -106,7 +106,7 @@ def status(msg, level="info"):
 
 
 def header(text):
-    w = max(len(text) + 4, 50)
+    w = min(max(len(text) + 4, 50), 76)
     print(f"\n  {S.CYAN}{S.BOLD}{'─' * w}{S.RESET}")
     print(f"  {S.WHITE}{S.BOLD}  {text}{S.RESET}")
     print(f"  {S.CYAN}{S.BOLD}{'─' * w}{S.RESET}\n")
@@ -114,9 +114,9 @@ def header(text):
 
 def ask(text, default=None):
     if default is not None:
-        r = input(f"  {S.YELLOW}▸{S.RESET} {text} [{S.DIM}{default}{S.RESET}]: ").strip()
+        r = input(f"  {S.CYAN}▸{S.RESET} {text} [{S.CYAN}{S.BOLD}{default}{S.RESET}]: ").strip()
         return r if r else str(default)
-    return input(f"  {S.YELLOW}▸{S.RESET} {text}: ").strip()
+    return input(f"  {S.CYAN}▸{S.RESET} {text}: ").strip()
 
 
 def separator():
@@ -331,7 +331,7 @@ def fetch_releases(channel="stable"):
 
 def select_channel():
     """Let user pick stable or beta. Returns channel name string."""
-    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}")
+    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}  {S.GREEN}◄{S.RESET}")
     print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
     print()
     c = ask("Select channel", "1")
@@ -386,7 +386,7 @@ def _select_beta_channel():
     features = _discover_feature_branches()
 
     print()
-    print(f"      {S.YELLOW}{S.BOLD}[1]{S.RESET}  Staging  {S.DIM}(latest pre-release){S.RESET}")
+    print(f"      {S.YELLOW}{S.BOLD}[1]{S.RESET}  Staging  {S.DIM}(latest pre-release){S.RESET}  {S.GREEN}◄{S.RESET}")
 
     for i, name in enumerate(features, 2):
         label = name.replace("feature-test-", "")
@@ -432,9 +432,10 @@ def select_version(catalog, channel="stable"):
         ts = v.get("timestamp", "")[:10]
         is_latest = " ← latest" if tag == latest_tag else ""
         pico = "  + pico" if v.get("files", {}).get("pico") else ""
+        marker = f"  {S.GREEN}◄{S.RESET}" if i == 1 else ""
         print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {tag}  "
               f"{S.DIM}{ts}{pico}{S.RESET}"
-              f"{S.GREEN}{S.BOLD}{is_latest}{S.RESET}")
+              f"{S.GREEN}{S.BOLD}{is_latest}{S.RESET}{marker}")
 
     if len(versions) > 10:
         print(f"      {S.DIM}… and {len(versions) - 10} more{S.RESET}")
@@ -1683,9 +1684,13 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     # ── Warn about data loss ──
     print()
-    print(f"  {S.RED}{S.BOLD}⚠  WARNING: This will ERASE ALL data on the SD card!{S.RESET}")
-    print(f"  {S.RED}   Samples, macros, presets, and custom files will be deleted.{S.RESET}")
-    print(f"  {S.RED}   A fresh factory SD card image will be written.{S.RESET}")
+    print(f"  {S.RED}┌─────────────────────────────────────────────────────────┐{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  WARNING: This will ERASE ALL data on the SD card!{S.RESET}  {S.RED}│{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}                                                         {S.RED}│{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}  Samples, macros, presets, and custom files              {S.RED}│{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}  will be deleted. A fresh factory SD card image          {S.RED}│{S.RESET}")
+    print(f"  {S.RED}│{S.RESET}  will be written.                                       {S.RED}│{S.RESET}")
+    print(f"  {S.RED}└─────────────────────────────────────────────────────────┘{S.RESET}")
     print()
 
     if not is_cli:
@@ -1698,7 +1703,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     status("How would you like to access the SD card?", "info")
     print()
     print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Via USB (MSC mode)    "
-          f"{S.DIM}— no need to open the device{S.RESET}")
+          f"{S.DIM}— no need to open the device{S.RESET}  {S.GREEN}◄{S.RESET}")
     print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  External card reader  "
           f"{S.DIM}— requires opening the device{S.RESET}")
     print()
@@ -1977,7 +1982,7 @@ def deploy_sd_only(channel="stable"):
     print()
     status("How would you like to access the SD card?", "info")
     print()
-    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Via USB (MSC mode)")
+    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Via USB (MSC mode)   {S.GREEN}◄{S.RESET}")
     print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  External card reader")
     print()
     use_msc = ask("Select method", "1") != "2"
@@ -2093,9 +2098,10 @@ def main_menu():
         clear()
         banner()
 
-        print(f"  {S.BOLD}What would you like to do?{S.RESET}\n")
+        print(f"  {S.BOLD}What would you like to do?{S.RESET}")
+        print(f"  {S.DIM}Enter a number to select, then press Enter{S.RESET}\n")
 
-        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}⚡ Quick Update{S.RESET}")
+        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}⚡ Quick Update{S.RESET}  {S.GREEN}◄{S.RESET}")
         print(f"           {S.DIM}Flash P4 + Pico firmware (keeps SD card data){S.RESET}")
         print()
         print(f"      {S.GREEN}{S.BOLD}[2]{S.RESET}  {S.BOLD}🗄️  Full SD Card Deploy{S.RESET}")
