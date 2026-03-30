@@ -384,10 +384,12 @@ def is_valid_cached_file(path, min_size=MIN_FIRMWARE_SIZE):
     return True
 
 
-def download_file(url, dest_path, label=None, timeout=30):
+def download_file(url, dest_path, label=None, timeout=30, verify=True):
     """Download a file with progress bar. Returns True on success.
 
     On success, writes a .sha256 sidecar for future cache verification.
+    If verify=True, also checks the download against a CDN-provided
+    .sha256 hash file (if available). Returns False on hash mismatch.
     On failure, removes any partial file so it won't be treated as cached.
     """
     import urllib.request
@@ -421,6 +423,9 @@ def download_file(url, dest_path, label=None, timeout=30):
             status(f"Downloaded → {os.path.basename(dest_path)} "
                    f"({size_kb:.1f} KB)", "ok")
         _write_hash_sidecar(dest_path)
+        # Verify against CDN-provided hash if available
+        if verify and not verify_download(dest_path, url):
+            return False
         return True
     except urllib.error.HTTPError as e:
         print()
@@ -434,6 +439,56 @@ def download_file(url, dest_path, label=None, timeout=30):
     # Clean up partial/broken file so it won't be treated as cached
     try:
         os.unlink(dest_path)
+    except OSError:
+        pass
+    return False
+
+
+def _fetch_cdn_hash(url):
+    """Try to fetch a .sha256 hash file from the CDN for a given URL.
+
+    Convention: for URL "https://cdn/path/firmware.bin", tries to fetch
+    "https://cdn/path/firmware.bin.sha256". Returns the hex digest string
+    or None if the hash file doesn't exist.
+    """
+    import urllib.request
+    import urllib.error
+
+    hash_url = url + ".sha256"
+    try:
+        with urllib.request.urlopen(hash_url, timeout=10) as resp:
+            content = resp.read(256).decode("ascii", errors="replace").strip()
+            # Hash files may contain "hash  filename" or just "hash"
+            return content.split()[0] if content else None
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def verify_download(file_path, source_url):
+    """Verify a downloaded file against a CDN-provided .sha256 hash.
+
+    Fetches <source_url>.sha256 from the CDN. If available, compares
+    against the local file. Returns True if verified or if no server
+    hash is available (warn-only). Returns False if hash mismatch.
+    """
+    cdn_hash = _fetch_cdn_hash(source_url)
+    if cdn_hash is None:
+        return True  # No server hash available — accept
+
+    actual = sha256_file(file_path)
+    if actual == cdn_hash:
+        status("Integrity verified (SHA-256)", "ok")
+        return True
+
+    status(f"[E108] Integrity check FAILED for {os.path.basename(file_path)}", "err")
+    status(f"  Expected: {cdn_hash}", "err")
+    status(f"  Got:      {actual}", "err")
+    status("The downloaded file does not match the server hash.", "err")
+    status("This could indicate a corrupted download or tampered file.", "err")
+    # Remove the bad file
+    try:
+        os.unlink(file_path)
+        os.unlink(file_path + ".sha256")
     except OSError:
         pass
     return False
@@ -784,6 +839,18 @@ def _port_label(port):
     return ""
 
 
+def _is_valid_port_path(port):
+    """Validate a user-supplied serial port path against safe patterns.
+
+    Accepts /dev/<name> (Unix) or COMn (Windows).
+    """
+    if re.match(r'^/dev/[a-zA-Z0-9._-]+$', port):
+        return True
+    if re.match(r'^COM\d+$', port, re.IGNORECASE):
+        return True
+    return False
+
+
 def select_port(prompt_extra=""):
     """Auto-detect and let user select a serial port. Returns port path or None."""
     while True:
@@ -808,7 +875,10 @@ def select_port(prompt_extra=""):
             if choice.lower() == "r":
                 print()
                 continue
-            return choice
+            if _is_valid_port_path(choice):
+                return choice
+            status("[E209] Invalid port path — expected /dev/... or COMn", "err")
+            continue
 
         if len(ports) == 1:
             label = _port_label(ports[0])
@@ -836,7 +906,7 @@ def select_port(prompt_extra=""):
             if 0 <= idx < len(ports):
                 return ports[idx]
         except ValueError:
-            if choice.startswith("/dev/") or choice.startswith("COM"):
+            if _is_valid_port_path(choice):
                 return choice
 
         status("[E208] Invalid selection", "err")
@@ -1675,7 +1745,7 @@ def write_hash_file(hash_url, mount_point, cache_dir):
     hash_name = os.path.basename(hash_url)
     hash_local = os.path.join(cache_dir, hash_name)
 
-    if not download_file(hash_url, hash_local, "SD card hash"):
+    if not download_file(hash_url, hash_local, "SD card hash", verify=False):
         status("Could not download hash — skipping .version write", "warn")
         return True
 

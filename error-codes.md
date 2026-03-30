@@ -16,6 +16,7 @@ Quote the code when reporting issues.
 | E105 | No versions found in catalog | `releases.json` exists but contains no versions | The channel may be empty. Switch to Stable channel. |
 | E106 | No SD card image available | The selected firmware version has no SD card image | Choose a different version, or use Quick Update instead. |
 | E107 | Cached file corrupted | SHA-256 of cached file doesn't match the hash recorded at download time | The file will be re-downloaded automatically. If this keeps happening, check your disk for errors. |
+| E108 | Integrity check FAILED | SHA-256 of downloaded file doesn't match the server-provided hash | Could be a corrupted download or tampered file. The file is deleted automatically — retry. If it persists, check your network (corporate proxy, VPN). |
 
 ## E2xx — Environment & Prerequisites
 
@@ -29,6 +30,7 @@ Quote the code when reporting issues.
 | E206 | esptool install error | Unexpected error during esptool setup | Check the error details. Delete `.venv/` and retry. |
 | E207 | No serial devices found | No USB serial ports detected | Connect the **front JTAG port** (USB-C #3). If the port still doesn't appear, hold the **BOOT button** while plugging in. |
 | E208 | Invalid selection | Port selection didn't match any available port | Enter a valid port number or full path (e.g., `/dev/cu.usbmodem*`, `COM3`). |
+| E209 | Invalid port path | User-supplied port path doesn't match expected format | Unix: must be `/dev/<name>`. Windows: must be `COMn`. |
 
 ## E3xx — Flashing (ESP32-P4, RP2350, MSC)
 
