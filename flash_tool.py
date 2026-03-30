@@ -27,6 +27,7 @@ import zipfile
 import tempfile
 import argparse
 import struct
+import unicodedata
 import zlib
 from pathlib import Path
 
@@ -129,8 +130,32 @@ class S:
 # ═══════════════════════════════════════════════════
 #  UI HELPERS
 # ═══════════════════════════════════════════════════
+def _display_width(text):
+    """Return the number of terminal columns a string occupies.
+
+    Accounts for wide characters (CJK, emoji) that take 2 columns.
+    """
+    width = 0
+    for ch in text:
+        eaw = unicodedata.east_asian_width(ch)
+        width += 2 if eaw in ("W", "F") else 1
+    return width
+
+
+def _enable_windows_ansi():
+    """Enable ANSI escape sequences on Windows 10+.
+
+    Calling os.system("") triggers the Windows console to process virtual
+    terminal sequences. Without this, ANSI color codes print as raw text.
+    Only needs to be called once per process.
+    """
+    _enable_windows_ansi()
+
+
 def clear():
-    os.system("cls" if PLATFORM == "Windows" else "clear")
+    """Clear the terminal screen using ANSI escapes."""
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def status(msg, level="info"):
@@ -186,12 +211,14 @@ def step_header(step, total, title):
 def action_box(lines):
     """Display a yellow-bordered box for user actions that require physical steps."""
     w = 55
+    title = "👉 ACTION REQUIRED"
+    title_pad = w - 2 - _display_width(title)
     print()
     print(f"  {S.YELLOW}┌{'─' * w}┐{S.RESET}")
-    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}👉 ACTION REQUIRED{S.RESET}{' ' * (w - 21)}{S.YELLOW}│{S.RESET}")
+    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}{title}{S.RESET}{' ' * title_pad}{S.YELLOW}│{S.RESET}")
     print(f"  {S.YELLOW}│{' ' * w}│{S.RESET}")
     for line in lines:
-        padding = w - 2 - len(line)
+        padding = w - 2 - _display_width(line)
         if padding < 0:
             padding = 0
         print(f"  {S.YELLOW}│{S.RESET}  {S.WHITE}{line}{S.RESET}{' ' * padding}{S.YELLOW}│{S.RESET}")
@@ -2315,8 +2342,7 @@ def deploy_sd_only(channel="stable"):
 # ═══════════════════════════════════════════════════
 def main_menu():
     """Interactive main menu."""
-    if PLATFORM == "Windows":
-        os.system("")
+    _enable_windows_ansi()
 
     while True:
         clear()
@@ -2414,8 +2440,7 @@ examples:
 
 def run_cli(args):
     """Handle CLI arguments."""
-    if PLATFORM == "Windows":
-        os.system("")
+    _enable_windows_ansi()
 
     banner()
 
