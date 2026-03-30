@@ -111,7 +111,7 @@ class S:
     BOLD    = "\033[1m"
     if _LIGHT_BG:
         # Standard (dark) colors — readable on white/light backgrounds
-        DIM     = "\033[37m"       # light gray text
+        DIM     = "\033[90m"       # gray (bright black) — good contrast on white
         RED     = "\033[31m"
         GREEN   = "\033[32m"
         YELLOW  = "\033[33m"
@@ -245,6 +245,7 @@ def _retry_prompt(step_name, tips=None):
 
 FLASH_RECOVERY_TIPS = [
     "Unplug and replug the JTAG cable (USB-C #3)",
+    "Close any other serial terminal or program using the port",
     "Power cycle: unplug ALL cables → wait 3 seconds → reconnect",
     "Try a different USB port on your computer",
 ]
@@ -260,6 +261,40 @@ PICO_RECOVERY_TIPS = [
     "Make sure the USB cable supports data (not charge-only)",
     "Try a different USB port on your computer",
 ]
+
+
+def _restore_p4_from_msc(esptool_cmd, urls, cache_dir):
+    """Flash P4 firmware to restore ota_0 after MSC mode (ota_1).
+
+    Returns the port string on success, or None on failure.
+    """
+    print()
+    status("Restoring normal boot by flashing P4 firmware …", "work")
+    action_box([
+        "Enter download mode:",
+        "",
+        "1. Hold BOOT button on the back",
+        "   (between Port #1 and Port #2)",
+        "2. While holding BOOT, press and",
+        "   release Reset (next to Port #1)",
+        "3. Release BOOT",
+        "4. Press Reset once more to restart",
+    ])
+    ask("Press Enter when ready")
+    port = select_port("Re-detecting ports for recovery")
+    if not port:
+        return None
+    p4_name = os.path.basename(urls["p4_url"])
+    p4_path = os.path.join(cache_dir, p4_name)
+    if not is_valid_cached_file(p4_path):
+        if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
+            return None
+    print()
+    if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
+        status("Normal boot restored!", "ok")
+        return port
+    status("[E310] Recovery flash failed — try menu option [3] Flash P4 Only", "err")
+    return None
 
 
 def completion_banner(title, firmware_tag=None):
@@ -856,32 +891,54 @@ def _is_valid_port_path(port):
 
 def select_port(prompt_extra=""):
     """Auto-detect and let user select a serial port. Returns port path or None."""
+    scan_count = 0
     while True:
-        status("Scanning serial ports …", "work")
+        scan_count += 1
+        if scan_count == 1:
+            status("Scanning serial ports …", "work")
+        else:
+            sys.stdout.write(f"\r  {S.CYAN}⟳{S.RESET} Scanning serial ports … (attempt {scan_count})  ")
+            sys.stdout.flush()
         ports = find_serial_ports()
 
         if not ports:
+            if scan_count == 1:
+                print()
+            else:
+                print()  # newline after \r status
             status("[E207] No serial devices found", "err")
-            action_box([
-                "Make sure the TBD-16 is connected:",
-                "",
-                "Front JTAG port (USB-C #3) → your computer",
-                "Back Port #1 or #2 → power",
-                "",
-                "If the port still doesn't appear:",
-                "Hold the BOOT button (back, between",
-                "Port #1 and #2) while plugging in JTAG.",
-            ])
-            choice = ask("Enter port path, 'r' to scan again, or Enter to cancel")
+            if scan_count <= 1:
+                # Show full guidance on first attempt only
+                action_box([
+                    "Make sure the TBD-16 is connected:",
+                    "",
+                    "Front JTAG port (USB-C #3) → computer",
+                    "Back Port #1 or #2 → power supply",
+                    "",
+                    "Still no port? Try this:",
+                    "",
+                    "1. Hold BOOT button on the back",
+                    "   (between Port #1 and Port #2)",
+                    "2. While holding BOOT, press and",
+                    "   release Reset (next to Port #1)",
+                    "3. Release BOOT",
+                    "4. Press Reset once more to restart",
+                ])
+            else:
+                status("Still no port found", "warn")
+                print()
+            choice = ask("'r' to scan again, port path, or Enter to cancel")
             if not choice:
                 return None
             if choice.lower() == "r":
-                print()
                 continue
             if _is_valid_port_path(choice):
                 return choice
             status("[E209] Invalid port path — expected /dev/... or COMn", "err")
             continue
+
+        if scan_count > 1:
+            print()  # newline after \r status
 
         if len(ports) == 1:
             label = _port_label(ports[0])
@@ -1118,17 +1175,32 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
     print()
 
     try:
-        rc = subprocess.run(cmd).returncode
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        output_lines = []
+        for line in proc.stdout:
+            print(line, end="")
+            output_lines.append(line)
+        proc.wait()
         print()
         separator()
         try:
             os.unlink(ota_data_path)
         except OSError:
             pass
-        if rc == 0:
+        if proc.returncode == 0:
             status("MSC firmware flashed — device will reboot into SD card mode", "ok")
             return True
-        status("[E303] MSC firmware flash failed — check errors above", "err")
+        output = "".join(output_lines)
+        if "Resource busy" in output or "Errno 16" in output:
+            status("[E303] Port is busy — another program may be using it", "err")
+            status("Close any serial monitors, terminals, or IDEs using this port", "info")
+            time.sleep(2)
+        elif "No serial data" in output:
+            status("[E303] No response from device — try entering download mode", "err")
+            status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
+        else:
+            status("[E303] MSC firmware flash failed — check errors above", "err")
     except (subprocess.SubprocessError, OSError) as e:
         status(f"[E304] MSC flash error: {e}", "err")
     return False
@@ -1170,13 +1242,28 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
     print()
 
     try:
-        rc = subprocess.run(cmd).returncode
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        output_lines = []
+        for line in proc.stdout:
+            print(line, end="")
+            output_lines.append(line)
+        proc.wait()
         print()
         separator()
-        if rc == 0:
+        if proc.returncode == 0:
             status(f"{label} flashed successfully!", "ok")
             return True
-        status(f"[E306] Flashing {label} failed — check errors above", "err")
+        output = "".join(output_lines)
+        if "Resource busy" in output or "Errno 16" in output:
+            status(f"[E306] Port is busy — another program may be using it", "err")
+            status("Close any serial monitors, terminals, or IDEs using this port", "info")
+            time.sleep(2)
+        elif "No serial data" in output:
+            status(f"[E306] No response from device — try entering download mode", "err")
+            status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
+        else:
+            status(f"[E306] Flashing {label} failed — check errors above", "err")
     except (subprocess.SubprocessError, OSError) as e:
         status(f"[E307] Flash error: {e}", "err")
     return False
@@ -2030,116 +2117,130 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                 return False
             print()
 
-        # Wait for SD card
+        # Wait for SD card — structured retry with guidance
         print()
         status("Device is rebooting into SD card mode …", "work")
         time.sleep(POST_FLASH_DELAY)
 
         sd_mount = wait_for_sd_card()
-        while not sd_mount:
-            if not _retry_prompt("SD card mount", [
-                "Check back Port #1 is connected to your computer",
-                "Unplug and replug back Port #1, wait 30 seconds",
-                "Try a different USB port on your computer",
-                "Try a powered USB hub (older Macs may have weak USB power)",
-            ]):
-                # ── CRITICAL: device is stuck in MSC mode (ota_1) ──
+
+        # Retry 1: replug back port
+        if not sd_mount:
+            print()
+            status("SD card didn't appear yet — this can happen on some systems", "warn")
+            action_box([
+                "Try replugging the back port:",
+                "",
+                "1. Unplug back Port #1 USB cable",
+                "2. Wait 5 seconds",
+                "3. Plug it back in and wait",
+            ])
+            if ask("Try again? (y/n)", "y").lower() in ("y", "yes"):
+                sd_mount = wait_for_sd_card()
+
+        # Retry 2: full power cycle with extended timeout
+        if not sd_mount:
+            print()
+            status("Still not mounting — let's try a full power cycle", "warn")
+            action_box([
+                "1. Unplug ALL USB cables from TBD-16",
+                "2. Wait 10 seconds",
+                "3. Reconnect back Port #1 to computer",
+                "4. Try a powered USB hub if available",
+                "   (older Macs may have weak USB power)",
+            ])
+            if ask("Try once more? (y/n)", "y").lower() in ("y", "yes"):
+                sd_mount = wait_for_sd_card(timeout=120)
+
+        # All retries exhausted — recovery options
+        if not sd_mount:
+            print()
+            print(f"  {S.RED}┌─────────────────────────────────────────────────────────┐{S.RESET}")
+            print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  SD card could not be mounted{S.RESET}                      {S.RED}│{S.RESET}")
+            print(f"  {S.RED}│{S.RESET}                                                         {S.RED}│{S.RESET}")
+            print(f"  {S.RED}│{S.RESET}  The device is in MSC mode (SD card reader).             {S.RED}│{S.RESET}")
+            print(f"  {S.RED}│{S.RESET}  You can still update firmware without the SD card,      {S.RED}│{S.RESET}")
+            print(f"  {S.RED}│{S.RESET}  or try the SD card with an external card reader.        {S.RED}│{S.RESET}")
+            print(f"  {S.RED}└─────────────────────────────────────────────────────────┘{S.RESET}")
+            print()
+            print(f"  {S.BOLD}Options:{S.RESET}")
+            print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}Skip SD card — flash firmware only{S.RESET}  {S.GREEN}◄{S.RESET}")
+            print(f"           {S.DIM}(deploy SD later via menu [5] + card reader){S.RESET}")
+            print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Use external card reader for SD card")
+            print(f"           {S.DIM}(requires opening the device){S.RESET}")
+            print(f"      {S.CYAN}{S.BOLD}[3]{S.RESET}  Try mounting once more")
+            print(f"      {S.RED}{S.BOLD}[4]{S.RESET}  Exit safely {S.DIM}(restores normal boot first){S.RESET}")
+            print()
+            recovery = ask("Select option", "1")
+
+            if recovery == "3":
+                # One more attempt
                 print()
-                print(f"  {S.RED}┌─────────────────────────────────────────────────────────┐{S.RESET}")
-                print(f"  {S.RED}│{S.RESET}  {S.RED}{S.BOLD}⚠  Device is in MSC mode — needs recovery!{S.RESET}          {S.RED}│{S.RESET}")
-                print(f"  {S.RED}│{S.RESET}                                                         {S.RED}│{S.RESET}")
-                print(f"  {S.RED}│{S.RESET}  The device is currently booting into SD card mode.     {S.RED}│{S.RESET}")
-                print(f"  {S.RED}│{S.RESET}  Normal operation will NOT work until P4 firmware       {S.RED}│{S.RESET}")
-                print(f"  {S.RED}│{S.RESET}  is re-flashed to restore the main boot partition.     {S.RED}│{S.RESET}")
-                print(f"  {S.RED}└─────────────────────────────────────────────────────────┘{S.RESET}")
-                print()
-                print(f"  {S.BOLD}Options:{S.RESET}")
-                print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}Flash P4 firmware now{S.RESET} to restore normal boot  {S.GREEN}◄{S.RESET}")
-                print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Use external card reader instead")
-                print(f"      {S.RED}{S.BOLD}[3]{S.RESET}  Exit {S.DIM}(device stays in MSC mode!){S.RESET}")
-                print()
-                recovery = ask("Select recovery option", "1")
-                if recovery == "1":
-                    # Flash P4 firmware to restore ota_0 boot
+                action_box([
+                    "1. Unplug ALL USB cables from TBD-16",
+                    "2. Wait 10 seconds",
+                    "3. Reconnect back Port #1 ONLY",
+                    "4. Wait for the volume to appear",
+                ])
+                ask("Press Enter when you've reconnected")
+                sd_mount = wait_for_sd_card(timeout=120)
+
+            if not sd_mount and recovery in ("1", "3"):
+                if recovery == "3":
+                    status("Still no SD card — will flash firmware only", "warn")
                     print()
-                    status("Restoring normal boot by flashing P4 firmware …", "work")
-                    action_box([
-                        "Power-cycle the device first:",
-                        "",
-                        "1. Unplug ALL USB cables",
-                        "2. Wait 5 seconds",
-                        "3. Reconnect JTAG (front, USB-C #3)",
-                        "4. Reconnect a back port for power",
-                    ])
-                    ask("Press Enter when ready")
-                    port = select_port("Re-detecting ports for recovery")
-                    if port:
-                        p4_name = os.path.basename(urls["p4_url"])
-                        p4_path = os.path.join(cache_dir, p4_name)
-                        if not is_valid_cached_file(p4_path):
-                            download_file(urls["p4_url"], p4_path, "P4 firmware")
-                        if is_valid_cached_file(p4_path):
-                            print()
-                            if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
-                                status("Normal boot restored!", "ok")
-                                status("You can now retry Full SD Card Deploy or use Quick Update", "info")
-                            else:
-                                status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
-                    print()
+                # Skip SD card — continue with firmware flash only
+                status("Restoring normal boot first …", "work")
+                recovered_port = _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+                if not recovered_port:
                     ask("Press Enter to return to menu")
                     return False
-                elif recovery == "2":
-                    # Switch to external card reader flow
-                    use_msc = False
-                    status("Switching to external card reader method …", "info")
-                    # Still need to recover from MSC mode first
-                    print()
-                    status("First, let's restore normal boot …", "work")
-                    action_box([
-                        "Power-cycle the device first:",
-                        "",
-                        "1. Unplug ALL USB cables",
-                        "2. Wait 5 seconds",
-                        "3. Reconnect JTAG (front, USB-C #3)",
-                        "4. Reconnect a back port for power",
-                    ])
-                    ask("Press Enter when ready")
-                    port = select_port("Re-detecting ports for recovery")
-                    if port:
-                        p4_name = os.path.basename(urls["p4_url"])
-                        p4_path = os.path.join(cache_dir, p4_name)
-                        if not is_valid_cached_file(p4_path):
-                            download_file(urls["p4_url"], p4_path, "P4 firmware")
-                        if is_valid_cached_file(p4_path):
-                            print()
-                            flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)")
-
-                    # Continue with card reader flow
+                # Continue to Pico flash if available
+                if has_pico:
                     step_n += 1
-                    step_header(step_n, total_steps, "Mount SD Card via Card Reader")
-                    action_box([
-                        "1. Power off the TBD-16 (disconnect all cables)",
-                        "2. Open the device and remove the SD card",
-                        "3. Insert the SD card into your card reader",
-                    ])
-                    ask("Press Enter when the SD card is mounted")
-                    sd_mount = find_sd_card()
-                    if not sd_mount:
-                        sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
-                        if not os.path.isdir(sd_mount):
-                            status(f"[E407] Directory not found: {sd_mount}", "err")
-                            return False
-                        safe, reason = _is_safe_to_erase(sd_mount)
-                        if not safe:
-                            status(f"[E402] REFUSED: {reason}", "err")
-                            return False
-                    # Fall through to SD write step below
-                    break
-                else:
-                    status("Exiting — device is still in MSC mode!", "warn")
-                    status("To recover: use menu option [3] Flash ESP32-P4 only", "info")
-                    return False
-            sd_mount = wait_for_sd_card()
+                    step_header(step_n, total_steps, "Flash RP2350 (Pico)")
+                    if not wizard_flash_pico(urls, cache_dir):
+                        status("Pico flash had issues, but P4 was updated", "warn")
+                completion_banner("Firmware Updated (SD card skipped)", tag)
+                print(f"    {S.YELLOW}{S.BOLD}Note:{S.RESET} SD card still has old data.")
+                print(f"    To deploy SD card later, use menu option {S.BOLD}[5] Deploy SD card image only{S.RESET}")
+                print(f"    with an external card reader.\n")
+                power_cycle_warning()
+                return True
+
+            elif recovery == "2" and not sd_mount:
+                # Switch to external card reader
+                status("Switching to external card reader …", "info")
+                _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+                use_msc = False
+                print()
+                step_n += 1
+                step_header(step_n, total_steps, "Mount SD Card via Card Reader")
+                action_box([
+                    "1. Power off the TBD-16 (disconnect all cables)",
+                    "2. Open the device and remove the SD card",
+                    "3. Insert the SD card into your card reader",
+                ])
+                ask("Press Enter when the SD card is mounted")
+                sd_mount = find_sd_card()
+                if not sd_mount:
+                    sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
+                    if not os.path.isdir(sd_mount):
+                        status(f"[E407] Directory not found: {sd_mount}", "err")
+                        return False
+                    safe, reason = _is_safe_to_erase(sd_mount)
+                    if not safe:
+                        status(f"[E402] REFUSED: {reason}", "err")
+                        return False
+                # Fall through to SD write step below
+
+            elif recovery == "4" or (recovery not in ("1", "2", "3") and not sd_mount):
+                # Exit safely — restore P4 first
+                status("Restoring normal boot before exit …", "work")
+                _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+                print()
+                ask("Press Enter to return to menu")
+                return False
     else:
         step_n += 1
         step_header(step_n, total_steps, "Mount SD Card via Card Reader")
@@ -2389,13 +2490,56 @@ def deploy_sd_only(channel="stable"):
 
         time.sleep(POST_FLASH_DELAY)
         sd_mount = wait_for_sd_card()
-        while not sd_mount:
-            if not _retry_prompt("SD card mount", [
-                "Check back Port #1 is connected to your computer",
-                "Unplug and replug back Port #1, wait 30 seconds",
-            ]):
+
+        # Retry 1: replug back port
+        if not sd_mount:
+            print()
+            status("SD card didn't appear yet — this can happen on some systems", "warn")
+            action_box([
+                "Try replugging the back port:",
+                "",
+                "1. Unplug back Port #1 USB cable",
+                "2. Wait 5 seconds",
+                "3. Plug it back in and wait",
+            ])
+            if ask("Try again? (y/n)", "y").lower() in ("y", "yes"):
+                sd_mount = wait_for_sd_card()
+
+        # Retry 2: full power cycle with extended timeout
+        if not sd_mount:
+            print()
+            status("Still not mounting — try a full power cycle", "warn")
+            action_box([
+                "1. Unplug ALL USB cables from TBD-16",
+                "2. Wait 10 seconds",
+                "3. Reconnect back Port #1 to computer",
+                "4. Try a powered USB hub if available",
+            ])
+            if ask("Try once more? (y/n)", "y").lower() in ("y", "yes"):
+                sd_mount = wait_for_sd_card(timeout=120)
+
+        if not sd_mount:
+            print()
+            status("SD card could not be mounted", "err")
+            print(f"  {S.BOLD}Options:{S.RESET}")
+            print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Restore normal boot and exit  {S.GREEN}◄{S.RESET}")
+            print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Try once more (extended timeout)")
+            print()
+            recovery = ask("Select option", "1")
+            if recovery == "2":
+                action_box([
+                    "1. Unplug ALL USB cables from TBD-16",
+                    "2. Wait 10 seconds",
+                    "3. Reconnect back Port #1 ONLY",
+                ])
+                ask("Press Enter when you've reconnected")
+                sd_mount = wait_for_sd_card(timeout=120)
+            if not sd_mount:
+                status("Restoring normal boot …", "work")
+                _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+                print()
+                ask("Press Enter to return to menu")
                 return False
-            sd_mount = wait_for_sd_card()
     else:
         action_box([
             "Insert SD card into your card reader",
@@ -2453,35 +2597,14 @@ def deploy_sd_only(channel="stable"):
         print(f"  {S.YELLOW}{S.BOLD}  ⚠  Device is still in MSC mode!{S.RESET}")
         print(f"  {S.YELLOW}  Normal operation will NOT work until P4 firmware is flashed.{S.RESET}")
         print()
-        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  {S.BOLD}Flash P4 firmware now{S.RESET} to restore normal boot  {S.GREEN}◄{S.RESET}")
-        print(f"      {S.RED}{S.BOLD}[2]{S.RESET}  Skip {S.DIM}(device stays in MSC mode!){S.RESET}")
-        print()
-        if ask("Select", "1") == "1":
-            action_box([
-                "Power-cycle required before flashing:",
-                "",
-                "1. Unplug ALL back USB cables",
-                "2. Wait 3 seconds",
-                "3. Replug back port",
-                "",
-                "Keep front JTAG port connected.",
-            ])
-            ask("Press Enter when ready")
-            port = select_port("Re-detecting ports for recovery")
-            if port:
-                p4_name = os.path.basename(urls["p4_url"])
-                p4_path = os.path.join(cache_dir, p4_name)
-                if not is_valid_cached_file(p4_path):
-                    download_file(urls["p4_url"], p4_path, "P4 firmware")
-                if is_valid_cached_file(p4_path):
-                    print()
-                    if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
-                        status("Normal boot restored!", "ok")
-                        completion_banner("SD Deploy + P4 Recovery Complete!")
-                        power_cycle_warning()
-                        return True
-                    else:
-                        status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
+        if ask("  Flash P4 now to restore? (y/n)", "y").lower() in ("y", "yes"):
+            recovered = _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+            if recovered:
+                completion_banner("SD Deploy + P4 Recovery Complete!")
+                power_cycle_warning()
+                return True
+            else:
+                status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
         else:
             status("Skipping P4 flash — device stays in MSC mode!", "warn")
             status("Use menu option [1] Quick Update or [3] Flash P4 Only to recover", "info")
