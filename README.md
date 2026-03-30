@@ -6,18 +6,20 @@ A terminal-based wizard to update your **dadamachines TBD-16** — flash ESP32-P
 
 Works on **macOS**, **Linux**, and **Windows**.
 
-## Installation
+## Download
 
-### Download
+> **[⬇ Download latest release](https://github.com/dadamachines/dada-tbd-tui/releases/latest)**
+>
+> Download the `.zip`, unzip, and run `./flash.sh` (macOS/Linux) or `flash.bat` (Windows).
+
+Or clone with git:
 
 ```bash
 git clone https://github.com/dadamachines/dada-tbd-tui.git
 cd dada-tbd-tui
 ```
 
-Or download and unzip from [GitHub Releases](https://github.com/dadamachines/dada-tbd-tui/releases).
-
-### Run
+## Getting Started
 
 **macOS / Linux:**
 ```bash
@@ -114,3 +116,9 @@ Erase & re-write the SD card image, then flash all firmware. Use for fresh insta
 ## Firmware Source
 
 All firmware is served from [dadamachines.github.io/dada-tbd-firmware](https://dadamachines.github.io/dada-tbd-firmware/) (GitHub Pages CDN). Downloads are cached in your system temp directory.
+
+## License
+
+This tool is licensed under the [GNU Lesser General Public License (LGPL 3.0)](https://www.gnu.org/licenses/lgpl-3.0.txt).
+
+© 2026 [Johannes Elias Lohbihler](https://dadamachines.com) for dadamachines.
