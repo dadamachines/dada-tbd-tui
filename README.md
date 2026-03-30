@@ -2,6 +2,8 @@
 
 A terminal-based wizard to update your **dadamachines TBD-16** — flash ESP32-P4 firmware, RP2350 (Pico) firmware, and deploy SD card images. An alternative to the [browser-based flash tool](https://dadamachines.github.io/ctag-tbd/flash/10_stable_channel.html).
 
+![TBD-16 Firmware Update Tool](screenshot.png)
+
 Works on **macOS**, **Linux**, and **Windows**.
 
 ## Installation
