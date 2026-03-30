@@ -19,6 +19,7 @@ import sys
 import subprocess
 import platform
 import glob
+import hashlib
 import re
 import time
 import json
@@ -329,21 +330,63 @@ def ensure_cache_dir():
 MIN_FIRMWARE_SIZE = 1024  # 1 KB — anything smaller is a bad download
 
 
-def is_valid_cached_file(path, min_size=MIN_FIRMWARE_SIZE):
-    """Check if a cached file exists and looks like a real download.
+def sha256_file(path):
+    """Compute SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
-    Rejects missing files, 0-byte files, and files smaller than min_size
-    (catches partial downloads and HTML error pages saved to disk).
+
+def _write_hash_sidecar(path):
+    """Write a .sha256 sidecar file next to a downloaded file."""
+    try:
+        digest = sha256_file(path)
+        with open(path + ".sha256", "w") as f:
+            f.write(digest + "\n")
+    except OSError:
+        pass
+
+
+def is_valid_cached_file(path, min_size=MIN_FIRMWARE_SIZE):
+    """Check if a cached file exists, is large enough, and has a valid hash.
+
+    Rejects missing files, 0-byte files, files smaller than min_size,
+    and files whose SHA-256 doesn't match their .sha256 sidecar.
     """
     try:
-        return os.path.isfile(path) and os.path.getsize(path) >= min_size
+        if not os.path.isfile(path) or os.path.getsize(path) < min_size:
+            return False
     except OSError:
         return False
+
+    # If a sidecar hash exists, verify it matches
+    sidecar = path + ".sha256"
+    if os.path.isfile(sidecar):
+        try:
+            with open(sidecar, "r") as f:
+                expected = f.read().strip()
+            actual = sha256_file(path)
+            if actual != expected:
+                status(f"[E107] Cached file corrupted: {os.path.basename(path)}", "warn")
+                status("Re-downloading …", "info")
+                try:
+                    os.unlink(path)
+                    os.unlink(sidecar)
+                except OSError:
+                    pass
+                return False
+        except OSError:
+            pass
+
+    return True
 
 
 def download_file(url, dest_path, label=None, timeout=30):
     """Download a file with progress bar. Returns True on success.
 
+    On success, writes a .sha256 sidecar for future cache verification.
     On failure, removes any partial file so it won't be treated as cached.
     """
     import urllib.request
@@ -376,6 +419,7 @@ def download_file(url, dest_path, label=None, timeout=30):
         else:
             status(f"Downloaded → {os.path.basename(dest_path)} "
                    f"({size_kb:.1f} KB)", "ok")
+        _write_hash_sidecar(dest_path)
         return True
     except urllib.error.HTTPError as e:
         print()

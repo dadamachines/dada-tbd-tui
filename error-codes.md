@@ -15,6 +15,7 @@ Quote the code when reporting issues.
 | E104 | Could not fetch releases | `releases.json` unreachable after 3 retries | CDN may be down. Retry later, or check if the channel name is correct. |
 | E105 | No versions found in catalog | `releases.json` exists but contains no versions | The channel may be empty. Switch to Stable channel. |
 | E106 | No SD card image available | The selected firmware version has no SD card image | Choose a different version, or use Quick Update instead. |
+| E107 | Cached file corrupted | SHA-256 of cached file doesn't match the hash recorded at download time | The file will be re-downloaded automatically. If this keeps happening, check your disk for errors. |
 
 ## E2xx — Environment & Prerequisites
 

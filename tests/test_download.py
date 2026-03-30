@@ -1,5 +1,6 @@
 """Tests for download_file — uses a local HTTP server, no real network."""
 
+import hashlib
 import http.server
 import os
 import tempfile
@@ -95,3 +96,17 @@ class TestDownloadFile:
         dest = str(tmp_path / "labeled.bin")
         result = download_file(f"{http_server}/ok.bin", dest, label="test fw")
         assert result is True
+
+    def test_creates_sha256_sidecar(self, http_server, tmp_path):
+        dest = str(tmp_path / "hashed.bin")
+        download_file(f"{http_server}/ok.bin", dest)
+        sidecar = dest + ".sha256"
+        assert os.path.isfile(sidecar)
+        expected = hashlib.sha256((b"\xDE\xAD" * 512)).hexdigest()
+        with open(sidecar) as f:
+            assert f.read().strip() == expected
+
+    def test_failed_download_no_sidecar(self, http_server, tmp_path):
+        dest = str(tmp_path / "fail.bin")
+        download_file(f"{http_server}/404", dest)
+        assert not os.path.isfile(dest + ".sha256")
