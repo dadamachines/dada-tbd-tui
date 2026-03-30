@@ -63,8 +63,14 @@ install_python() {
             echo
             # Check if Homebrew is available
             if command -v brew &>/dev/null; then
-                info "Installing Python via Homebrew …"
-                brew install python3
+                read -p "  Install Python 3 via Homebrew? (y/n) [y]: " -r REPLY
+                REPLY="${REPLY:-y}"
+                if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+                    info "Installing Python via Homebrew …"
+                    brew install python3
+                else
+                    die "Please install Python 3.8+ manually and try again"
+                fi
             else
                 info "Install options:"
                 echo "    1. Install Homebrew first (recommended):"

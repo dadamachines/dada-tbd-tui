@@ -2129,6 +2129,10 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                         if not os.path.isdir(sd_mount):
                             status(f"[E407] Directory not found: {sd_mount}", "err")
                             return False
+                        safe, reason = _is_safe_to_erase(sd_mount)
+                        if not safe:
+                            status(f"[E402] REFUSED: {reason}", "err")
+                            return False
                     # Fall through to SD write step below
                     break
                 else:
@@ -2152,6 +2156,10 @@ def wizard_full(channel="stable", version=None, is_cli=False):
             sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
             if not os.path.isdir(sd_mount):
                 status(f"[E407] Directory not found: {sd_mount}", "err")
+                return False
+            safe, reason = _is_safe_to_erase(sd_mount)
+            if not safe:
+                status(f"[E402] REFUSED: {reason}", "err")
                 return False
 
     # ── Write SD card image ──
@@ -2398,6 +2406,10 @@ def deploy_sd_only(channel="stable"):
             sd_mount = ask("Enter SD card mount path")
             if not os.path.isdir(sd_mount):
                 status(f"[E407] Not found: {sd_mount}", "err")
+                return False
+            safe, reason = _is_safe_to_erase(sd_mount)
+            if not safe:
+                status(f"[E402] REFUSED: {reason}", "err")
                 return False
 
     # Download SD image
