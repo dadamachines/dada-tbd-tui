@@ -16,9 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$SCRIPT_DIR/flash_tool.py"
 MIN_VERSION=8  # minimum Python 3.x
 
-RED='\033[91m'
-GREEN='\033[92m'
-CYAN='\033[96m'
+# Use bold + standard colors — readable on both light and dark backgrounds
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+CYAN='\033[1;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 

@@ -19,6 +19,7 @@ import sys
 import subprocess
 import platform
 import glob
+import re
 import time
 import json
 import shutil
@@ -28,6 +29,8 @@ import argparse
 import struct
 import zlib
 from pathlib import Path
+
+PLATFORM = platform.system()  # "Darwin", "Linux", or "Windows"
 
 # ═══════════════════════════════════════════════════
 #  CONSTANTS
@@ -88,7 +91,7 @@ def _detect_light_background():
         except (ValueError, IndexError):
             pass
     # macOS Terminal.app defaults to white background
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         term = os.environ.get("TERM_PROGRAM", "")
         if term == "Apple_Terminal":
             return True
@@ -127,7 +130,7 @@ class S:
 #  UI HELPERS
 # ═══════════════════════════════════════════════════
 def clear():
-    os.system("cls" if platform.system() == "Windows" else "clear")
+    os.system("cls" if PLATFORM == "Windows" else "clear")
 
 
 def status(msg, level="info"):
@@ -263,9 +266,9 @@ def power_cycle_warning():
     osc_url = f"\033]8;;{url}\033\\{S.CYAN}{S.BOLD}{url}{S.RESET}\033]8;;\033\\"
     print(f"      {osc_url}")
     print()
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         print(f"    {S.DIM}(Hold ⌘ and click the link, or copy it into your browser){S.RESET}")
-    elif platform.system() == "Windows":
+    elif PLATFORM == "Windows":
         print(f"    {S.DIM}(Hold Ctrl and click the link, or copy it into your browser){S.RESET}")
     else:
         print(f"    {S.DIM}(Ctrl+click the link, or copy it into your browser){S.RESET}")
@@ -296,8 +299,26 @@ def ensure_cache_dir():
     return CACHE_DIR
 
 
+MIN_FIRMWARE_SIZE = 1024  # 1 KB — anything smaller is a bad download
+
+
+def is_valid_cached_file(path, min_size=MIN_FIRMWARE_SIZE):
+    """Check if a cached file exists and looks like a real download.
+
+    Rejects missing files, 0-byte files, and files smaller than min_size
+    (catches partial downloads and HTML error pages saved to disk).
+    """
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) >= min_size
+    except OSError:
+        return False
+
+
 def download_file(url, dest_path, label=None, timeout=30):
-    """Download a file with progress bar. Returns True on success."""
+    """Download a file with progress bar. Returns True on success.
+
+    On failure, removes any partial file so it won't be treated as cached.
+    """
     import urllib.request
     import urllib.error
 
@@ -338,6 +359,11 @@ def download_file(url, dest_path, label=None, timeout=30):
     except OSError as e:
         print()
         status(f"[E103] Download failed: {e}", "err")
+    # Clean up partial/broken file so it won't be treated as cached
+    try:
+        os.unlink(dest_path)
+    except OSError:
+        pass
     return False
 
 
@@ -377,15 +403,20 @@ def fetch_releases(channel="stable"):
 
 def select_channel():
     """Let user pick stable or beta. Returns channel name string."""
-    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}  {S.GREEN}◄{S.RESET}")
-    print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
-    print()
-    c = ask("Select channel", "1")
-    if c != "2":
-        return "stable"
+    while True:
+        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}  {S.GREEN}◄{S.RESET}")
+        print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
+        print()
+        c = ask("Select channel", "1")
+        if c != "2":
+            return "stable"
 
-    # Beta channel — discover staging + feature branches
-    return _select_beta_channel()
+        # Beta channel — discover staging + feature branches
+        result = _select_beta_channel()
+        if result is not None:
+            return result
+        # User picked [0] Back — re-show channel selection
+        print()
 
 
 def _discover_feature_branches():
@@ -402,7 +433,6 @@ def _discover_feature_branches():
     except Exception:
         return []
 
-    import re
     candidates = set()
     for r in releases:
         if not r.get("prerelease"):
@@ -427,11 +457,15 @@ def _discover_feature_branches():
 
 
 def _select_beta_channel():
-    """Show beta channel sub-menu: staging + feature branches."""
+    """Show beta channel sub-menu: staging + feature branches.
+
+    Returns channel name string, or None if user picks [0] Back.
+    """
     status("Discovering beta channels …", "work")
     features = _discover_feature_branches()
 
     print()
+    print(f"      {S.DIM}{S.BOLD}[0]{S.RESET}  {S.DIM}Back{S.RESET}")
     print(f"      {S.YELLOW}{S.BOLD}[1]{S.RESET}  Staging  {S.DIM}(latest pre-release){S.RESET}  {S.GREEN}◄{S.RESET}")
 
     for i, name in enumerate(features, 2):
@@ -442,11 +476,13 @@ def _select_beta_channel():
     c = ask("Select beta channel", "1")
 
     try:
-        idx = int(c) - 1
+        idx = int(c)
         if idx == 0:
+            return None
+        if idx == 1:
             return "staging"
-        if 0 < idx <= len(features):
-            return features[idx - 1]
+        if 1 < idx <= len(features) + 1:
+            return features[idx - 2]
     except ValueError:
         pass
 
@@ -526,7 +562,7 @@ def check_python():
 
 def _venv_python():
     """Return the Python executable path inside the local venv."""
-    if platform.system() == "Windows":
+    if PLATFORM == "Windows":
         return os.path.join(VENV_DIR, "Scripts", "python.exe")
     return os.path.join(VENV_DIR, "bin", "python3")
 
@@ -595,7 +631,7 @@ def install_esptool():
                     # Detect missing python3-venv on Debian/Ubuntu
                     if "ensurepip" in err_msg or "No module named" in err_msg:
                         status("[E202] Python venv module is not installed", "err")
-                        if platform.system() == "Linux":
+                        if PLATFORM == "Linux":
                             status("Fix with:", "info")
                             status(f"  sudo apt install python3-venv   {S.DIM}(Debian/Ubuntu){S.RESET}", "info")
                             status(f"  sudo dnf install python3-libs   {S.DIM}(Fedora/RHEL){S.RESET}", "info")
@@ -648,7 +684,7 @@ def ensure_esptool():
 def find_serial_ports():
     """Scan for serial ports."""
     ports = []
-    osname = platform.system()
+    osname = PLATFORM
     if osname == "Linux":
         for p in ("/dev/ttyUSB*", "/dev/ttyACM*"):
             ports.extend(glob.glob(p))
@@ -1000,7 +1036,7 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
 # ═══════════════════════════════════════════════════
 def find_uf2_volume():
     """Find a mounted UF2 bootloader volume (RP2350 in BOOTSEL mode)."""
-    osname = platform.system()
+    osname = PLATFORM
 
     if osname == "Darwin":
         bases = ["/Volumes"]
@@ -1092,7 +1128,7 @@ def wizard_flash_pico(urls, cache_dir):
     # Download UF2
     uf2_name = os.path.basename(pico_url)
     uf2_path = os.path.join(cache_dir, uf2_name)
-    if not os.path.exists(uf2_path):
+    if not is_valid_cached_file(uf2_path):
         if not download_file(pico_url, uf2_path, "Pico firmware"):
             return False
     else:
@@ -1133,7 +1169,7 @@ def _is_removable_volume(vol_path):
     On macOS: uses diskutil to verify the volume is on removable/external media.
     On Linux: checks if the device is under /media or /run/media (auto-mounted).
     """
-    osname = platform.system()
+    osname = PLATFORM
 
     if osname == "Darwin":
         try:
@@ -1182,7 +1218,7 @@ def _get_volume_info(vol_path):
         'device': 'unknown',
     }
 
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         try:
             r = subprocess.run(
                 ["diskutil", "info", vol_path],
@@ -1202,7 +1238,7 @@ def _get_volume_info(vol_path):
                         info['device'] = line.split(":", 1)[1].strip()
         except Exception:
             pass
-    elif platform.system() == "Linux":
+    elif PLATFORM == "Linux":
         try:
             r = subprocess.run(
                 ["df", "-h", vol_path],
@@ -1215,7 +1251,7 @@ def _get_volume_info(vol_path):
                     info['size'] = parts[1]
         except Exception:
             pass
-    elif platform.system() == "Windows":
+    elif PLATFORM == "Windows":
         drive_letter = os.path.splitdrive(vol_path)[0]
         if drive_letter:
             info['device'] = drive_letter
@@ -1228,22 +1264,30 @@ def _get_volume_info(vol_path):
                         info['name'] = line.split("is", 1)[-1].strip()
             except Exception:
                 pass
+            # PowerShell (works on Windows 10+, unlike deprecated wmic)
             try:
+                ps_cmd = (
+                    f"Get-Volume -DriveLetter '{drive_letter[0]}' "
+                    "| Select-Object FileSystemType,Size "
+                    "| ForEach-Object {{ "
+                    "  'FS=' + $_.FileSystemType; "
+                    "  'SZ=' + $_.Size "
+                    "}}"
+                )
                 r = subprocess.run(
-                    ["wmic", "logicaldisk", "where",
-                     f"DeviceID='{drive_letter}'", "get", "Size,FileSystem",
-                     "/format:list"],
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
                     capture_output=True, text=True, timeout=5)
                 for line in r.stdout.splitlines():
-                    if line.startswith("FileSystem="):
-                        info['filesystem'] = line.split("=", 1)[1].strip()
-                    elif line.startswith("Size="):
+                    line = line.strip()
+                    if line.startswith("FS="):
+                        info['filesystem'] = line[3:]
+                    elif line.startswith("SZ="):
                         try:
-                            sz = int(line.split("=", 1)[1].strip())
+                            sz = int(line[3:])
                             info['size'] = f"{sz / 1073741824:.1f} GB"
                         except ValueError:
                             pass
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 pass
 
     return info
@@ -1266,7 +1310,7 @@ def _is_safe_to_erase(vol_path):
         return False, f"System directory: {real_path}"
 
     # Layer 3: On macOS, must be under /Volumes/ (not /Volumes/Macintosh HD)
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         if not real_path.startswith("/Volumes/"):
             return False, f"Not a mounted volume: {real_path}"
         vol_name = real_path.replace("/Volumes/", "").split("/")[0]
@@ -1292,7 +1336,7 @@ def find_sd_card():
     2. Check for TBD-16 signature files (data/spm-config.json)
     3. Always validate the volume is on removable media
     """
-    osname = platform.system()
+    osname = PLATFORM
 
     candidates = []
 
@@ -1577,11 +1621,11 @@ def eject_sd_card(mount_point):
     """Safely eject the SD card."""
     status(f"Ejecting {mount_point} …", "work")
     try:
-        if platform.system() != "Windows":
+        if PLATFORM != "Windows":
             subprocess.run(["sync"], timeout=10, capture_output=True)
         time.sleep(1)
 
-        if platform.system() == "Darwin":
+        if PLATFORM == "Darwin":
             r = subprocess.run(
                 ["diskutil", "eject", mount_point],
                 capture_output=True, text=True, timeout=30)
@@ -1589,7 +1633,7 @@ def eject_sd_card(mount_point):
                 status("SD card ejected", "ok")
                 return True
             status(f"Eject warning: {r.stderr.strip()}", "warn")
-        elif platform.system() == "Linux":
+        elif PLATFORM == "Linux":
             r = subprocess.run(
                 ["umount", mount_point],
                 capture_output=True, text=True, timeout=30)
@@ -1597,7 +1641,7 @@ def eject_sd_card(mount_point):
                 status("SD card unmounted", "ok")
                 return True
             status(f"Unmount warning: {r.stderr.strip()}", "warn")
-        elif platform.system() == "Windows":
+        elif PLATFORM == "Windows":
             # Use PowerShell to eject removable drive
             drive_letter = os.path.splitdrive(mount_point)[0]
             if drive_letter:
@@ -1672,7 +1716,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -1792,7 +1836,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         # Download MSC firmware
         msc_name = os.path.basename(urls["msc_url"])
         msc_path = os.path.join(cache_dir, msc_name)
-        if not os.path.exists(msc_path):
+        if not is_valid_cached_file(msc_path):
             if not download_file(urls["msc_url"], msc_path, "MSC firmware"):
                 return False
         else:
@@ -1859,9 +1903,9 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                     if port:
                         p4_name = os.path.basename(urls["p4_url"])
                         p4_path = os.path.join(cache_dir, p4_name)
-                        if not os.path.exists(p4_path):
+                        if not is_valid_cached_file(p4_path):
                             download_file(urls["p4_url"], p4_path, "P4 firmware")
-                        if os.path.exists(p4_path):
+                        if is_valid_cached_file(p4_path):
                             print()
                             if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
                                 status("Normal boot restored!", "ok")
@@ -1891,9 +1935,9 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                     if port:
                         p4_name = os.path.basename(urls["p4_url"])
                         p4_path = os.path.join(cache_dir, p4_name)
-                        if not os.path.exists(p4_path):
+                        if not is_valid_cached_file(p4_path):
                             download_file(urls["p4_url"], p4_path, "P4 firmware")
-                        if os.path.exists(p4_path):
+                        if is_valid_cached_file(p4_path):
                             print()
                             flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)")
 
@@ -1954,7 +1998,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     sd_zip_name = os.path.basename(urls["sd_url"])
     sd_zip_path = os.path.join(cache_dir, sd_zip_name)
-    if not os.path.exists(sd_zip_path):
+    if not is_valid_cached_file(sd_zip_path):
         if not download_file(urls["sd_url"], sd_zip_path, "SD card image"):
             return False
     else:
@@ -1997,7 +2041,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -2053,7 +2097,7 @@ def flash_p4_only(channel="stable"):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -2138,7 +2182,7 @@ def deploy_sd_only(channel="stable"):
 
         msc_name = os.path.basename(urls["msc_url"])
         msc_path = os.path.join(cache_dir, msc_name)
-        if not os.path.exists(msc_path):
+        if not is_valid_cached_file(msc_path):
             if not download_file(urls["msc_url"], msc_path, "MSC firmware"):
                 return False
 
@@ -2186,7 +2230,7 @@ def deploy_sd_only(channel="stable"):
     # Download SD image
     sd_zip_name = os.path.basename(urls["sd_url"])
     sd_zip_path = os.path.join(cache_dir, sd_zip_name)
-    if not os.path.exists(sd_zip_path):
+    if not is_valid_cached_file(sd_zip_path):
         if not download_file(urls["sd_url"], sd_zip_path, "SD card image"):
             return False
 
@@ -2233,7 +2277,7 @@ def deploy_sd_only(channel="stable"):
 # ═══════════════════════════════════════════════════
 def main_menu():
     """Interactive main menu."""
-    if platform.system() == "Windows":
+    if PLATFORM == "Windows":
         os.system("")
 
     while True:
@@ -2332,7 +2376,7 @@ examples:
 
 def run_cli(args):
     """Handle CLI arguments."""
-    if platform.system() == "Windows":
+    if PLATFORM == "Windows":
         os.system("")
 
     banner()

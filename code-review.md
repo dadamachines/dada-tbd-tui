@@ -71,7 +71,7 @@ status(f"Found {len(ports)} port(s):\n", "ok")  # UNREACHABLE
 **Issue:** `urlretrieve` has been informally deprecated since Python 3.x and may be removed in future versions. It also doesn't support timeouts on the download itself (only the initial connection via the global socket timeout).
 **Recommendation:** Replace with `urllib.request.urlopen` + chunked read into a file. This also enables proper timeout control and more predictable progress reporting.
 
-#### 5. Broad `except Exception` in flash operations
+#### (done) 5. Broad `except Exception` in flash operations
 **Location:** lines 329, 534, 599, 786, 936, 984
 **Issue:** Several exception handlers catch `Exception` broadly. Most are fine for user-facing "something went wrong" messages, but `_try_esptool` (line 533) catches `(FileNotFoundError, Exception)` which is redundant — `Exception` already covers `FileNotFoundError`. More importantly, bare `except Exception` in subprocess calls can swallow `KeyboardInterrupt` in Python < 3.12 when it's raised during a C-level call.
 **Recommendation:** Catch `(subprocess.SubprocessError, OSError)` instead of `Exception` in subprocess-related code.
