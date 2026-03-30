@@ -136,8 +136,11 @@ def banner():
 
 
 def step_header(step, total, title):
-    print(f"\n  {S.BOLD}{S.MAGENTA}Step {step}/{total}{S.RESET}"
-          f"  {S.BOLD}{title}{S.RESET}\n")
+    print()
+    print(f"  {S.CYAN}{'─' * 55}{S.RESET}")
+    print(f"  {S.CYAN}{S.BOLD}  Step {step}/{total}  │  {S.WHITE}{title}{S.RESET}")
+    print(f"  {S.CYAN}{'─' * 55}{S.RESET}")
+    print()
 
 
 def _retry_prompt(step_name, tips=None):
