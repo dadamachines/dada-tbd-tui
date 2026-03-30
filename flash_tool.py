@@ -43,6 +43,7 @@ MSC_FW_PATH = "utilities/dada-tbd-16-tusb_msc-p4/dada-tbd-16-tusb-msc.bin"
 CHIP = "esp32p4"
 BAUD = "921600"
 UNIFIED_OFFSET = "0x0"
+ESPTOOL_VERSION = "4.8.1"  # pinned for supply-chain safety; bump deliberately
 
 # Partition table addresses
 PT_ADDR = 0x8000           # partition table location in flash
@@ -772,11 +773,11 @@ def install_esptool():
                 status(f"[E203] Could not create venv: {e}", "err")
                 return False
 
-    status("Installing esptool …", "work")
+    status(f"Installing esptool {ESPTOOL_VERSION} …", "work")
     print()
     try:
         r = subprocess.run(
-            [venv_py, "-m", "pip", "install", "--upgrade", "esptool"],
+            [venv_py, "-m", "pip", "install", f"esptool=={ESPTOOL_VERSION}"],
             timeout=120,
         )
         print()
@@ -1310,6 +1311,21 @@ def wizard_flash_pico(urls, cache_dir):
 # ═══════════════════════════════════════════════════
 #  SD CARD OPERATIONS
 # ═══════════════════════════════════════════════════
+def _safe_drive_letter(vol_path):
+    """Extract and validate a Windows drive letter from a path.
+
+    Returns a single uppercase letter (e.g. 'D') or None if the path
+    doesn't contain a valid drive letter. Prevents PowerShell injection
+    via crafted mount paths.
+    """
+    # os.path.splitdrive only works for drive letters on Windows (ntpath).
+    # Use a regex so validation works on any platform.
+    m = re.match(r'^([A-Za-z]):', vol_path)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
 def _is_removable_volume(vol_path):
     """Check if a volume is removable/external media (not a system disk).
 
@@ -1399,22 +1415,22 @@ def _get_volume_info(vol_path):
         except Exception:
             pass
     elif PLATFORM == "Windows":
-        drive_letter = os.path.splitdrive(vol_path)[0]
-        if drive_letter:
-            info['device'] = drive_letter
+        dl = _safe_drive_letter(vol_path)
+        if dl:
+            info['device'] = dl + ":"
             try:
                 r = subprocess.run(
-                    ["cmd", "/c", "vol", drive_letter],
+                    ["cmd", "/c", "vol", dl + ":"],
                     capture_output=True, text=True, timeout=5)
                 for line in r.stdout.splitlines():
                     if "is" in line.lower():
                         info['name'] = line.split("is", 1)[-1].strip()
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 pass
             # PowerShell (works on Windows 10+, unlike deprecated wmic)
             try:
                 ps_cmd = (
-                    f"Get-Volume -DriveLetter '{drive_letter[0]}' "
+                    f"Get-Volume -DriveLetter '{dl}' "
                     "| Select-Object FileSystemType,Size "
                     "| ForEach-Object {{ "
                     "  'FS=' + $_.FileSystemType; "
@@ -1790,11 +1806,11 @@ def eject_sd_card(mount_point):
             status(f"Unmount warning: {r.stderr.strip()}", "warn")
         elif PLATFORM == "Windows":
             # Use PowerShell to eject removable drive
-            drive_letter = os.path.splitdrive(mount_point)[0]
-            if drive_letter:
+            dl = _safe_drive_letter(mount_point)
+            if dl:
                 r = subprocess.run(
                     ["powershell", "-Command",
-                     f"(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive_letter}\\').InvokeVerb('Eject')"],
+                     f"(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{dl}:\\').InvokeVerb('Eject')"],
                     capture_output=True, text=True, timeout=30)
                 if r.returncode == 0:
                     status("SD card ejected", "ok")

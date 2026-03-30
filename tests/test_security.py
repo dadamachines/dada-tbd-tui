@@ -1,4 +1,4 @@
-"""Tests for security fixes: port validation and download integrity."""
+"""Tests for security fixes: port validation, drive letter validation, download integrity."""
 
 import hashlib
 import http.server
@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from flash_tool import _is_valid_port_path, verify_download, sha256_file
+from flash_tool import _is_valid_port_path, _safe_drive_letter, verify_download, sha256_file
 
 
 # ── SEC-03: Port path validation ─────────────────────
@@ -62,6 +62,43 @@ class TestPortPathValidation:
 
     def test_nested_dev_path(self):
         assert _is_valid_port_path("/dev/sub/dir") is False
+
+
+# ── SEC-04/05: Drive letter validation (PowerShell injection) ──
+
+
+class TestSafeDriveLetter:
+    """Ensure _safe_drive_letter rejects dangerous inputs."""
+
+    def test_valid_drive(self):
+        assert _safe_drive_letter("D:\\") == "D"
+
+    def test_valid_drive_lowercase(self):
+        assert _safe_drive_letter("e:\\data") == "E"
+
+    def test_c_drive(self):
+        assert _safe_drive_letter("C:\\Users") == "C"
+
+    def test_empty_string(self):
+        assert _safe_drive_letter("") is None
+
+    def test_unix_path(self):
+        assert _safe_drive_letter("/Volumes/NO NAME") is None
+
+    def test_powershell_injection_single_quote(self):
+        assert _safe_drive_letter("'; Remove-Item -Recurse C:\\Users; ':") is None
+
+    def test_powershell_injection_semicolon(self):
+        assert _safe_drive_letter("';calc;':") is None
+
+    def test_no_colon(self):
+        assert _safe_drive_letter("D") is None
+
+    def test_number_not_letter(self):
+        assert _safe_drive_letter("1:\\") is None
+
+    def test_too_long_drive(self):
+        assert _safe_drive_letter("DD:\\") is None
 
 
 # ── SEC-02: Server-side hash verification ────────────
