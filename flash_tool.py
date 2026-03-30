@@ -163,37 +163,57 @@ PORT_RECOVERY_TIPS = [
     "Try a different USB port on your computer",
 ]
 
+PICO_RECOVERY_TIPS = [
+    "Hold BOOTSEL button → plug back Port #2 → release button",
+    "Make sure the USB cable supports data (not charge-only)",
+    "Try a different USB port on your computer",
+]
+
+
+def completion_banner(title, firmware_tag=None):
+    """Display a styled completion box matching the opening banner."""
+    print(f"\n{S.CYAN}{S.BOLD}", end="")
+    print("    ╔═════════════════════════════════════════════════════════╗")
+    print("    ║                                                         ║")
+    line = f"   ✓  {title}"
+    print(f"    ║{line:<57}║")
+    print("    ║                                                         ║")
+    if firmware_tag:
+        line2 = f"       Firmware: {firmware_tag}"
+        print(f"    ║{line2:<57}║")
+        print("    ║                                                         ║")
+    print(f"    ╚═════════════════════════════════════════════════════════╝{S.RESET}")
+    print()
+
 
 def power_cycle_warning():
     """Display prominent power-cycle instructions. Call at end of every wizard."""
+    print(f"\n{S.YELLOW}{S.BOLD}", end="")
+    print("    ╔═════════════════════════════════════════════════════════╗")
+    print("    ║                                                         ║")
+    print("    ║   ⚠  Power-cycle your device to finish!                 ║")
+    print("    ║                                                         ║")
+    print("    ║   1. Disconnect ALL USB cables                          ║")
+    print("    ║   2. Wait 5 seconds                                     ║")
+    print("    ║   3. Reconnect ONLY back Port #1                        ║")
+    print("    ║      (power + USB Ethernet + MIDI)                      ║")
+    print("    ║                                                         ║")
+    print(f"    ╚═════════════════════════════════════════════════════════╝{S.RESET}")
     print()
-    print(f"  {S.WHITE}{S.BOLD}╔═══════════════════════════════════════════════════════════╗{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║   ⚠  IMPORTANT: Power-cycle your device to finish!  ⚠     ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║   1. Disconnect ALL USB cables                            ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║   2. Wait 5 seconds                                       ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║   3. Reconnect ONLY back Port #1                          ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║      (power + USB Ethernet + MIDI)                        ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║   The device will NOT boot until power-cycled!            ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}║                                                           ║{S.RESET}")
-    print(f"  {S.WHITE}{S.BOLD}╚═══════════════════════════════════════════════════════════╝{S.RESET}")
-    print()
-    print(f"  {S.CYAN}{S.BOLD}  Then open the WebUI:{S.RESET}")
+    print(f"    {S.CYAN}{S.BOLD}Then open the WebUI:{S.RESET}")
     print()
     url = "http://192.168.4.1"
     osc_url = f"\033]8;;{url}\033\\{S.CYAN}{S.BOLD}{url}{S.RESET}\033]8;;\033\\"
     print(f"      {osc_url}")
     print()
     if platform.system() == "Darwin":
-        print(f"  {S.DIM}  (Hold ⌘ and click the link, or copy it into your browser){S.RESET}")
+        print(f"    {S.DIM}(Hold ⌘ and click the link, or copy it into your browser){S.RESET}")
     elif platform.system() == "Windows":
-        print(f"  {S.DIM}  (Hold Ctrl and click the link, or copy it into your browser){S.RESET}")
+        print(f"    {S.DIM}(Hold Ctrl and click the link, or copy it into your browser){S.RESET}")
     else:
-        print(f"  {S.DIM}  (Ctrl+click the link, or copy it into your browser){S.RESET}")
+        print(f"    {S.DIM}(Ctrl+click the link, or copy it into your browser){S.RESET}")
     print()
-    print(f"  {S.WHITE}{S.BOLD}  Have fun with your dadamachines TBD-16! 🎶{S.RESET}")
+    print(f"    {S.CYAN}{S.BOLD}Have fun with your dadamachines TBD-16! 🎶{S.RESET}")
     print()
 
 
@@ -272,17 +292,21 @@ def _channel_label(channel):
 
 
 def fetch_releases(channel="stable"):
-    """Fetch releases.json from the firmware CDN. Returns parsed JSON or None."""
+    """Fetch releases.json from the firmware CDN. Retries up to 3 times."""
     import urllib.request
     import urllib.error
 
     url = f"{FIRMWARE_CDN}/{channel}/releases.json"
-    try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        status(f"Could not fetch releases for '{channel}': {e}", "err")
-        return None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            if attempt < 3:
+                status(f"Could not fetch releases (attempt {attempt}/3): {e}", "warn")
+                time.sleep(attempt * 2)
+    status(f"Could not fetch releases for '{channel}' after 3 attempts", "err")
+    return None
 
 
 def select_channel():
@@ -1001,23 +1025,30 @@ def wizard_flash_pico(urls, cache_dir):
     else:
         status(f"Using cached: {uf2_name}", "ok")
 
-    # Find or wait for volume
-    vol = find_uf2_volume()
-    if not vol:
-        print()
-        status("No UF2 volume detected yet.", "warn")
-        status("Make sure RP2350 is in BOOTSEL mode:", "info")
-        status("  Hold BOOTSEL button → plug USB-C Port #2 → release button", "info")
-        print()
-
-        if ask("Wait for volume? (y/n)", "y").lower() != "y":
-            return False
-        vol = wait_for_uf2_volume()
+    # Find or wait for volume — with retry
+    while True:
+        vol = find_uf2_volume()
         if not vol:
-            status("UF2 volume not found. Pico flash skipped.", "err")
-            return False
+            print()
+            status("No UF2 volume detected yet.", "warn")
+            status("Make sure RP2350 is in BOOTSEL mode:", "info")
+            status("  Hold BOOTSEL button → plug USB-C Port #2 → release button", "info")
+            print()
 
-    return flash_uf2(uf2_path, vol)
+            if ask("Wait for volume? (y/n)", "y").lower() != "y":
+                status("Skipping Pico flash", "warn")
+                return True
+            vol = wait_for_uf2_volume()
+            if not vol:
+                if not _retry_prompt("Pico flash", PICO_RECOVERY_TIPS):
+                    return False
+                continue
+
+        if flash_uf2(uf2_path, vol):
+            return True
+
+        if not _retry_prompt("UF2 copy", PICO_RECOVERY_TIPS):
+            return False
 
 
 # ═══════════════════════════════════════════════════
@@ -1596,10 +1627,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
             status("Pico flash had issues, but P4 was updated successfully", "warn")
 
     # ── Done ──
-    print()
-    separator()
-    print(f"\n  {S.WHITE}{S.BOLD}✓ dadamachines TBD-16 — Quick Update Complete!{S.RESET}\n")
-    status(f"Firmware: {S.BOLD}{tag}{S.RESET}", "ok")
+    completion_banner("Quick Update Complete!", tag)
     power_cycle_warning()
     return True
 
@@ -1828,10 +1856,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
             status("Pico flash had issues, but P4 and SD card were updated", "warn")
 
     # ── Done ──
-    print()
-    separator()
-    print(f"\n  {S.WHITE}{S.BOLD}✓ dadamachines TBD-16 — Full SD Card Deploy Complete!{S.RESET}\n")
-    status(f"Firmware: {S.BOLD}{tag}{S.RESET}", "ok")
+    completion_banner("Full SD Card Deploy Complete!", tag)
     power_cycle_warning()
     return True
 
@@ -1881,6 +1906,7 @@ def flash_p4_only(channel="stable"):
         if not port:
             return False
         print()
+    completion_banner("ESP32-P4 Flash Complete!")
     power_cycle_warning()
     return True
 
@@ -1900,6 +1926,7 @@ def flash_pico_only(channel="stable"):
     urls = build_urls(version, channel)
     result = wizard_flash_pico(urls, cache_dir)
     if result:
+        completion_banner("RP2350 (Pico) Flash Complete!")
         power_cycle_warning()
     return result
 
@@ -2016,13 +2043,14 @@ def deploy_sd_only(channel="stable"):
     print()
     eject_sd_card(sd_mount)
 
-    if use_msc:
-        print()
-        status(f"{S.YELLOW}Important:{S.RESET} Device is still in MSC mode.", "warn")
-        status("Flash the P4 firmware to restore normal boot:", "warn")
-        status("  Use [1] Quick Update or [3] Flash P4 Only", "info")
+    completion_banner("SD Card Image Deployed!")
 
-    status("SD card image deployed!", "ok")
+    if use_msc:
+        print(f"  {S.YELLOW}{S.BOLD}  ⚠  Device is still in MSC mode!{S.RESET}")
+        print(f"  {S.YELLOW}  You MUST flash P4 firmware to restore normal boot.{S.RESET}")
+        print(f"  {S.YELLOW}  Return to the menu and use [1] Quick Update or [3] Flash P4 Only{S.RESET}")
+        print()
+
     return True
 
 
