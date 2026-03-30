@@ -103,7 +103,7 @@ class S:
     BOLD    = "\033[1m"
     if _LIGHT_BG:
         # Standard (dark) colors — readable on white/light backgrounds
-        DIM     = "\033[37m"       # light gray text
+        DIM     = "\033[90m"       # gray (bright black) — good contrast on white
         RED     = "\033[31m"
         GREEN   = "\033[32m"
         YELLOW  = "\033[33m"
@@ -210,6 +210,7 @@ def _retry_prompt(step_name, tips=None):
 
 FLASH_RECOVERY_TIPS = [
     "Unplug and replug the JTAG cable (USB-C #3)",
+    "Close any other serial terminal or program using the port",
     "Power cycle: unplug ALL cables → wait 3 seconds → reconnect",
     "Try a different USB port on your computer",
 ]
@@ -701,35 +702,53 @@ def _port_label(port):
 
 def select_port(prompt_extra=""):
     """Auto-detect and let user select a serial port. Returns port path or None."""
+    scan_count = 0
     while True:
-        status("Scanning serial ports …", "work")
+        scan_count += 1
+        if scan_count == 1:
+            status("Scanning serial ports …", "work")
+        else:
+            sys.stdout.write(f"\r  {S.CYAN}⟳{S.RESET} Scanning serial ports … (attempt {scan_count})  ")
+            sys.stdout.flush()
         ports = find_serial_ports()
 
         if not ports:
+            if scan_count == 1:
+                print()
+            else:
+                print()  # newline after \r status
             status("No serial devices found", "err")
-            action_box([
-                "Make sure the TBD-16 is connected:",
-                "",
-                "Front JTAG port (USB-C #3) → your computer",
-                "Back Port #1 or #2 → power",
-                "",
-                "If the port doesn't appear, enter",
-                "download mode manually:",
-                "",
-                "1. Unplug ALL cables from the TBD-16",
-                "2. Hold the BOOT button on the back",
-                "   (between Port #1 and Port #2)",
-                "3. While holding BOOT, plug in JTAG",
-                "4. Release BOOT after 2 seconds",
-                "5. Reconnect a back port for power",
-            ])
-            choice = ask("Enter port path, 'r' to scan again, or Enter to cancel")
+            if scan_count <= 1:
+                # Show full guidance on first attempt only
+                action_box([
+                    "Make sure the TBD-16 is connected:",
+                    "",
+                    "Front JTAG port (USB-C #3) → computer",
+                    "Back Port #1 or #2 → power supply",
+                    "",
+                    "Still no port? Enter download mode:",
+                    "",
+                    "1. Unplug ALL cables from TBD-16",
+                    "2. Hold BOOT button on the back",
+                    "   (between Port #1 and Port #2)",
+                    "3. Keep holding BOOT — reconnect",
+                    "   the JTAG cable (front USB-C #3)",
+                    "   This powers up in download mode",
+                    "4. Release BOOT after 2 seconds",
+                    "5. Reconnect a back port for power",
+                ])
+            else:
+                status("Still no port found", "warn")
+                print()
+            choice = ask("'r' to scan again, port path, or Enter to cancel")
             if not choice:
                 return None
             if choice.lower() == "r":
-                print()
                 continue
             return choice
+
+        if scan_count > 1:
+            print()  # newline after \r status
 
         if len(ports) == 1:
             label = _port_label(ports[0])
@@ -960,17 +979,32 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
     print()
 
     try:
-        rc = subprocess.run(cmd).returncode
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Print esptool output
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
         print()
         separator()
         try:
             os.unlink(ota_data_path)
         except OSError:
             pass
-        if rc == 0:
+        if result.returncode == 0:
             status("MSC firmware flashed — device will reboot into SD card mode", "ok")
             return True
-        status("MSC firmware flash failed — check errors above", "err")
+        # Detect specific errors for better guidance
+        output = (result.stdout or "") + (result.stderr or "")
+        if "Resource busy" in output or "Errno 16" in output:
+            status("Port is busy — another program may be using it", "err")
+            status("Close any serial monitors, terminals, or IDEs using this port", "info")
+            time.sleep(2)
+        elif "No serial data" in output:
+            status("No response from device — try entering download mode", "err")
+            status("Hold BOOT button → unplug/replug JTAG → release BOOT", "info")
+        else:
+            status("MSC firmware flash failed — check errors above", "err")
     except Exception as e:
         status(f"Error: {e}", "err")
     return False
@@ -1012,13 +1046,26 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
     print()
 
     try:
-        rc = subprocess.run(cmd).returncode
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
         print()
         separator()
-        if rc == 0:
+        if result.returncode == 0:
             status(f"{label} flashed successfully!", "ok")
             return True
-        status(f"Flashing {label} failed — check errors above", "err")
+        output = (result.stdout or "") + (result.stderr or "")
+        if "Resource busy" in output or "Errno 16" in output:
+            status("Port is busy — another program may be using it", "err")
+            status("Close any serial monitors, terminals, or IDEs using this port", "info")
+            time.sleep(2)
+        elif "No serial data" in output:
+            status("No response from device — try entering download mode", "err")
+            status("Hold BOOT button → unplug/replug JTAG → release BOOT", "info")
+        else:
+            status(f"Flashing {label} failed — check errors above", "err")
     except Exception as e:
         status(f"Error: {e}", "err")
     return False
