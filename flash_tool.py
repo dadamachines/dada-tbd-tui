@@ -150,7 +150,8 @@ def _enable_windows_ansi():
     terminal sequences. Without this, ANSI color codes print as raw text.
     Only needs to be called once per process.
     """
-    _enable_windows_ansi()
+    if PLATFORM == "Windows":
+        os.system("")
 
 
 def clear():
