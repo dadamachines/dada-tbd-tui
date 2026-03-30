@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify flash_tool.py compiles
+        run: python3 -c "import py_compile; py_compile.compile('flash_tool.py', doraise=True)"
+
+      - name: Create release archive
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p "dada-tbd-tui-${TAG}"
+          cp flash_tool.py flash.sh flash.bat README.md "dada-tbd-tui-${TAG}/"
+          chmod +x "dada-tbd-tui-${TAG}/flash.sh"
+          zip -r "dada-tbd-tui-${TAG}.zip" "dada-tbd-tui-${TAG}/"
+          tar -czf "dada-tbd-tui-${TAG}.tar.gz" "dada-tbd-tui-${TAG}/"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dada-tbd-tui-*.zip
+            dada-tbd-tui-*.tar.gz
