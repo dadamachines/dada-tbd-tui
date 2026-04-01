@@ -678,7 +678,13 @@ def select_version(catalog, channel="stable"):
         tag = v["tag"]
         ts = v.get("timestamp", "")[:10]
         is_latest = " ← latest" if tag == latest_tag else ""
-        pico = "  + pico" if v.get("files", {}).get("pico") else ""
+        files = v.get("files", {})
+        if files.get("picoBin"):
+            pico = "  + pico auto"
+        elif files.get("pico"):
+            pico = "  + pico"
+        else:
+            pico = ""
         marker = f"  {S.GREEN}◄{S.RESET}" if i == 1 else ""
         print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {tag}  "
               f"{S.DIM}{ts}{pico}{S.RESET}"
@@ -707,6 +713,7 @@ def build_urls(version, channel="stable"):
         "tag": version["tag"],
         "p4_url": f"{FIRMWARE_CDN}/{f['unified']}" if f.get("unified") else None,
         "pico_url": f"{FIRMWARE_CDN}/{f['pico']}" if f.get("pico") else None,
+        "pico_bin_url": f"{FIRMWARE_CDN}/{f['picoBin']}" if f.get("picoBin") else None,
         "sd_url": f"{FIRMWARE_CDN}/{f['sdcard']}" if f.get("sdcard") else None,
         "hash_url": f"{FIRMWARE_CDN}/{f['hash']}" if f.get("hash") else None,
         "msc_url": f"{FIRMWARE_CDN}/{MSC_FW_PATH}",
@@ -2031,7 +2038,8 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     urls = build_urls(version, channel)
     tag = urls["tag"]
-    has_pico = urls["pico_url"] is not None
+    has_pico = urls["pico_url"] is not None or urls.get("pico_bin_url") is not None
+    pico_on_sd = False  # Set True if .bin is placed on SD for picoboot3
 
     print()
     status(f"Selected: {S.BOLD}{tag}{S.RESET}", "ok")
@@ -2296,6 +2304,32 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     write_hash_file(urls.get("hash_url"), sd_mount, cache_dir)
 
+    # ── Deploy Pico firmware to SD for picoboot3 auto-update ──
+    if urls.get("pico_bin_url"):
+        print()
+        pico_bin_name = os.path.basename(urls["pico_bin_url"])
+        pico_bin_path = os.path.join(cache_dir, pico_bin_name)
+        if not is_valid_cached_file(pico_bin_path):
+            if not download_file(urls["pico_bin_url"], pico_bin_path, "Pico firmware (.bin)"):
+                status("Pico .bin download failed — will fall back to BOOTSEL", "warn")
+                pico_bin_path = None
+        else:
+            status(f"Using cached: {pico_bin_name}", "ok")
+
+        if pico_bin_path and os.path.isfile(pico_bin_path):
+            fw_dir = os.path.join(sd_mount, "system", "firmware")
+            os.makedirs(fw_dir, exist_ok=True)
+            dest_bin = os.path.join(fw_dir, "pico-firmware.bin")
+            dest_ver = os.path.join(fw_dir, "pico-firmware-version.txt")
+            try:
+                shutil.copy2(pico_bin_path, dest_bin)
+                with open(dest_ver, "w") as vf:
+                    vf.write(urls["tag"] + "\n")
+                status("Pico firmware placed on SD card for auto-update", "ok")
+                pico_on_sd = True
+            except OSError as e:
+                status(f"Failed to place Pico firmware on SD: {e}", "warn")
+
     # Clean macOS ._* files — CRITICAL: these cause JSON parse errors
     # and Guru Meditation crashes on the ESP32 firmware
     print()
@@ -2347,12 +2381,30 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     # ── Flash Pico ──
     if has_pico:
         step_n += 1
-        step_header(step_n, total_steps, "Flash RP2350 (Pico)")
-        if not wizard_flash_pico(urls, cache_dir):
-            status("Pico flash had issues, but P4 and SD card were updated", "warn")
+        if pico_on_sd:
+            step_header(step_n, total_steps, "RP2350 (Pico) Firmware")
+            print()
+            status("Pico firmware was placed on the SD card", "ok")
+            status("It will be auto-installed on first boot (~20 seconds)", "ok")
+            print()
+            print(f"    {S.DIM}The picoboot3 bootloader on the RP2350 will detect the{S.RESET}")
+            print(f"    {S.DIM}firmware file and flash it automatically.{S.RESET}")
+            print()
+            if urls.get("pico_url"):
+                if ask("  Flash manually via BOOTSEL instead? (y/n)", "n").lower() in ("y", "yes"):
+                    if not wizard_flash_pico(urls, cache_dir):
+                        status("Manual Pico flash had issues — auto-update will still work", "warn")
+        else:
+            step_header(step_n, total_steps, "Flash RP2350 (Pico)")
+            if not wizard_flash_pico(urls, cache_dir):
+                status("Pico flash had issues, but P4 and SD card were updated", "warn")
 
     # ── Done ──
     completion_banner("Full SD Card Deploy Complete!", tag)
+    if pico_on_sd:
+        print(f"    {S.YELLOW}{S.BOLD}Note:{S.RESET} First boot may take ~20 seconds longer while")
+        print(f"    the RP2350 firmware is auto-installed via picoboot3.")
+        print()
     power_cycle_warning()
     return True
 
@@ -2581,6 +2633,33 @@ def deploy_sd_only(channel="stable"):
         return False
     write_hash_file(urls.get("hash_url"), sd_mount, cache_dir)
 
+    # ── Deploy Pico firmware to SD for picoboot3 auto-update ──
+    pico_on_sd = False
+    if urls.get("pico_bin_url"):
+        print()
+        pico_bin_name = os.path.basename(urls["pico_bin_url"])
+        pico_bin_path = os.path.join(cache_dir, pico_bin_name)
+        if not is_valid_cached_file(pico_bin_path):
+            if not download_file(urls["pico_bin_url"], pico_bin_path, "Pico firmware (.bin)"):
+                status("Pico .bin download failed — skipping auto-update", "warn")
+                pico_bin_path = None
+        else:
+            status(f"Using cached: {pico_bin_name}", "ok")
+
+        if pico_bin_path and os.path.isfile(pico_bin_path):
+            fw_dir = os.path.join(sd_mount, "system", "firmware")
+            os.makedirs(fw_dir, exist_ok=True)
+            dest_bin = os.path.join(fw_dir, "pico-firmware.bin")
+            dest_ver = os.path.join(fw_dir, "pico-firmware-version.txt")
+            try:
+                shutil.copy2(pico_bin_path, dest_bin)
+                with open(dest_ver, "w") as vf:
+                    vf.write(urls["tag"] + "\n")
+                status("Pico firmware placed on SD card for auto-update", "ok")
+                pico_on_sd = True
+            except OSError as e:
+                status(f"Failed to place Pico firmware on SD: {e}", "warn")
+
     # Clean macOS ._* files — CRITICAL: these cause JSON parse errors
     # and Guru Meditation crashes on the ESP32 firmware
     print()
@@ -2591,6 +2670,11 @@ def deploy_sd_only(channel="stable"):
     eject_sd_card(sd_mount)
 
     completion_banner("SD Card Image Deployed!")
+
+    if pico_on_sd:
+        print(f"    {S.YELLOW}{S.BOLD}Note:{S.RESET} Next boot may take ~20 seconds longer while")
+        print(f"    the RP2350 firmware is auto-installed via picoboot3.")
+        print()
 
     if use_msc:
         print()

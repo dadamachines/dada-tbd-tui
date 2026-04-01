@@ -26,13 +26,15 @@ class TestChannelLabel:
 
 def _version(unified="stable/v1.0/p4.bin", pico="stable/v1.0/pico.uf2",
              sdcard="stable/v1.0/sd.zip", hash_file="stable/v1.0/sd.hash",
-             tag="v1.0"):
+             pico_bin=None, tag="v1.0"):
     """Helper to build a version dict matching releases.json shape."""
     files = {}
     if unified:
         files["unified"] = unified
     if pico:
         files["pico"] = pico
+    if pico_bin:
+        files["picoBin"] = pico_bin
     if sdcard:
         files["sdcard"] = sdcard
     if hash_file:
@@ -75,5 +77,20 @@ class TestBuildUrls:
         urls = build_urls(v)
         assert urls["p4_url"] is None
         assert urls["pico_url"] is None
+        assert urls["pico_bin_url"] is None
         assert urls["sd_url"] is None
         assert urls["hash_url"] is None
+
+    def test_pico_bin_url_present(self):
+        urls = build_urls(_version(pico_bin="stable/v1.0/pico.bin"))
+        assert urls["pico_bin_url"] == f"{FIRMWARE_CDN}/stable/v1.0/pico.bin"
+
+    def test_pico_bin_url_missing_is_none(self):
+        urls = build_urls(_version())
+        assert urls["pico_bin_url"] is None
+
+    def test_pico_bin_and_uf2_coexist(self):
+        urls = build_urls(_version(pico="stable/v1.0/pico.uf2",
+                                   pico_bin="stable/v1.0/pico.bin"))
+        assert urls["pico_url"] == f"{FIRMWARE_CDN}/stable/v1.0/pico.uf2"
+        assert urls["pico_bin_url"] == f"{FIRMWARE_CDN}/stable/v1.0/pico.bin"
