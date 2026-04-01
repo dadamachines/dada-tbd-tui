@@ -77,4 +77,6 @@ if not exist "%TOOL%" (
     exit /b 1
 )
 
+REM Note: arguments containing &, |, >, < or ^ are not supported in batch.
+REM Use the Python tool directly if you need special characters in arguments.
 %PYTHON% "%TOOL%" %*

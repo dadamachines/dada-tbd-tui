@@ -16,9 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$SCRIPT_DIR/flash_tool.py"
 MIN_VERSION=8  # minimum Python 3.x
 
-RED='\033[91m'
-GREEN='\033[92m'
-CYAN='\033[96m'
+# Use bold + standard colors — readable on both light and dark backgrounds
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+CYAN='\033[1;36m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
@@ -62,8 +63,14 @@ install_python() {
             echo
             # Check if Homebrew is available
             if command -v brew &>/dev/null; then
-                info "Installing Python via Homebrew …"
-                brew install python3
+                read -p "  Install Python 3 via Homebrew? (y/n) [y]: " -r REPLY
+                REPLY="${REPLY:-y}"
+                if [[ "$REPLY" =~ ^[Yy]$ ]]; then
+                    info "Installing Python via Homebrew …"
+                    brew install python3
+                else
+                    die "Please install Python 3.8+ manually and try again"
+                fi
             else
                 info "Install options:"
                 echo "    1. Install Homebrew first (recommended):"

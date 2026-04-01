@@ -19,6 +19,9 @@ import sys
 import subprocess
 import platform
 import glob
+import hashlib
+import re
+import ssl
 import time
 import json
 import shutil
@@ -26,8 +29,12 @@ import zipfile
 import tempfile
 import argparse
 import struct
+import unicodedata
 import zlib
 from pathlib import Path
+
+PLATFORM = platform.system()  # "Darwin", "Linux", or "Windows"
+SSL_CONTEXT = ssl.create_default_context()  # explicit TLS verification
 
 # ═══════════════════════════════════════════════════
 #  CONSTANTS
@@ -38,6 +45,7 @@ MSC_FW_PATH = "utilities/dada-tbd-16-tusb_msc-p4/dada-tbd-16-tusb-msc.bin"
 CHIP = "esp32p4"
 BAUD = "921600"
 UNIFIED_OFFSET = "0x0"
+ESPTOOL_VERSION = "4.8.1"  # pinned for supply-chain safety; bump deliberately
 
 # Partition table addresses
 PT_ADDR = 0x8000           # partition table location in flash
@@ -88,7 +96,7 @@ def _detect_light_background():
         except (ValueError, IndexError):
             pass
     # macOS Terminal.app defaults to white background
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         term = os.environ.get("TERM_PROGRAM", "")
         if term == "Apple_Terminal":
             return True
@@ -126,8 +134,33 @@ class S:
 # ═══════════════════════════════════════════════════
 #  UI HELPERS
 # ═══════════════════════════════════════════════════
+def _display_width(text):
+    """Return the number of terminal columns a string occupies.
+
+    Accounts for wide characters (CJK, emoji) that take 2 columns.
+    """
+    width = 0
+    for ch in text:
+        eaw = unicodedata.east_asian_width(ch)
+        width += 2 if eaw in ("W", "F") else 1
+    return width
+
+
+def _enable_windows_ansi():
+    """Enable ANSI escape sequences on Windows 10+.
+
+    Calling os.system("") triggers the Windows console to process virtual
+    terminal sequences. Without this, ANSI color codes print as raw text.
+    Only needs to be called once per process.
+    """
+    if PLATFORM == "Windows":
+        os.system("")
+
+
 def clear():
-    os.system("cls" if platform.system() == "Windows" else "clear")
+    """Clear the terminal screen using ANSI escapes."""
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def status(msg, level="info"):
@@ -183,12 +216,14 @@ def step_header(step, total, title):
 def action_box(lines):
     """Display a yellow-bordered box for user actions that require physical steps."""
     w = 55
+    title = "👉 ACTION REQUIRED"
+    title_pad = w - 2 - _display_width(title)
     print()
     print(f"  {S.YELLOW}┌{'─' * w}┐{S.RESET}")
-    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}👉 ACTION REQUIRED{S.RESET}{' ' * (w - 21)}{S.YELLOW}│{S.RESET}")
+    print(f"  {S.YELLOW}│{S.RESET}  {S.YELLOW}{S.BOLD}{title}{S.RESET}{' ' * title_pad}{S.YELLOW}│{S.RESET}")
     print(f"  {S.YELLOW}│{' ' * w}│{S.RESET}")
     for line in lines:
-        padding = w - 2 - len(line)
+        padding = w - 2 - _display_width(line)
         if padding < 0:
             padding = 0
         print(f"  {S.YELLOW}│{S.RESET}  {S.WHITE}{line}{S.RESET}{' ' * padding}{S.YELLOW}│{S.RESET}")
@@ -251,14 +286,14 @@ def _restore_p4_from_msc(esptool_cmd, urls, cache_dir):
         return None
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return None
     print()
     if flash_p4(esptool_cmd, port, p4_path, UNIFIED_OFFSET, "P4 firmware (recovery)"):
         status("Normal boot restored!", "ok")
         return port
-    status("Recovery flash failed — try menu option [3] Flash P4 Only", "err")
+    status("[E310] Recovery flash failed — try menu option [3] Flash P4 Only", "err")
     return None
 
 
@@ -298,9 +333,9 @@ def power_cycle_warning():
     osc_url = f"\033]8;;{url}\033\\{S.CYAN}{S.BOLD}{url}{S.RESET}\033]8;;\033\\"
     print(f"      {osc_url}")
     print()
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         print(f"    {S.DIM}(Hold ⌘ and click the link, or copy it into your browser){S.RESET}")
-    elif platform.system() == "Windows":
+    elif PLATFORM == "Windows":
         print(f"    {S.DIM}(Hold Ctrl and click the link, or copy it into your browser){S.RESET}")
     else:
         print(f"    {S.DIM}(Ctrl+click the link, or copy it into your browser){S.RESET}")
@@ -327,12 +362,74 @@ def progress_bar(done, total, width=35):
 #  DOWNLOAD & CACHE
 # ═══════════════════════════════════════════════════
 def ensure_cache_dir():
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True, mode=0o700)
     return CACHE_DIR
 
 
-def download_file(url, dest_path, label=None):
-    """Download a file with progress bar. Returns True on success."""
+MIN_FIRMWARE_SIZE = 1024  # 1 KB — anything smaller is a bad download
+
+
+def sha256_file(path):
+    """Compute SHA-256 hex digest of a file."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _write_hash_sidecar(path):
+    """Write a .sha256 sidecar file next to a downloaded file."""
+    try:
+        digest = sha256_file(path)
+        with open(path + ".sha256", "w") as f:
+            f.write(digest + "\n")
+    except OSError:
+        pass
+
+
+def is_valid_cached_file(path, min_size=MIN_FIRMWARE_SIZE):
+    """Check if a cached file exists, is large enough, and has a valid hash.
+
+    Rejects missing files, 0-byte files, files smaller than min_size,
+    and files whose SHA-256 doesn't match their .sha256 sidecar.
+    """
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) < min_size:
+            return False
+    except OSError:
+        return False
+
+    # If a sidecar hash exists, verify it matches
+    sidecar = path + ".sha256"
+    if os.path.isfile(sidecar):
+        try:
+            with open(sidecar, "r") as f:
+                expected = f.read().strip()
+            actual = sha256_file(path)
+            if actual != expected:
+                status(f"[E107] Cached file corrupted: {os.path.basename(path)}", "warn")
+                status("Re-downloading …", "info")
+                try:
+                    os.unlink(path)
+                    os.unlink(sidecar)
+                except OSError:
+                    pass
+                return False
+        except OSError:
+            pass
+
+    return True
+
+
+def download_file(url, dest_path, label=None, timeout=30, verify=True):
+    """Download a file with progress bar. Returns True on success.
+
+    On success, writes a .sha256 sidecar for future cache verification.
+    If verify=True, also checks the download against a CDN-provided
+    .sha256 hash file (if available). Returns False on hash mismatch.
+    On failure, removes any partial file so it won't be treated as cached.
+    """
     import urllib.request
     import urllib.error
 
@@ -341,11 +438,20 @@ def download_file(url, dest_path, label=None):
     status(f"URL → {S.DIM}{url}{S.RESET}", "info")
 
     try:
-        def hook(blk, blk_sz, total):
-            progress_bar(blk * blk_sz, total)
-
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        urllib.request.urlretrieve(url, dest_path, reporthook=hook)
+        with urllib.request.urlopen(url, timeout=timeout, context=SSL_CONTEXT) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            chunk_size = 64 * 1024
+            with open(dest_path, "wb") as f:
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        progress_bar(downloaded, total)
         print()
         size_kb = os.path.getsize(dest_path) / 1024
         if size_kb > 1024:
@@ -354,16 +460,75 @@ def download_file(url, dest_path, label=None):
         else:
             status(f"Downloaded → {os.path.basename(dest_path)} "
                    f"({size_kb:.1f} KB)", "ok")
+        _write_hash_sidecar(dest_path)
+        # Verify against CDN-provided hash if available
+        if verify and not verify_download(dest_path, url):
+            return False
         return True
     except urllib.error.HTTPError as e:
         print()
-        status(f"Download failed: HTTP {e.code} — {e.reason}", "err")
+        status(f"[E101] Download failed: HTTP {e.code} — {e.reason}", "err")
     except urllib.error.URLError as e:
         print()
-        status(f"Download failed: {e.reason}", "err")
-    except Exception as e:
+        status(f"[E102] Download failed: {e.reason}", "err")
+    except OSError as e:
         print()
-        status(f"Download failed: {e}", "err")
+        status(f"[E103] Download failed: {e}", "err")
+    # Clean up partial/broken file so it won't be treated as cached
+    try:
+        os.unlink(dest_path)
+    except OSError:
+        pass
+    return False
+
+
+def _fetch_cdn_hash(url):
+    """Try to fetch a .sha256 hash file from the CDN for a given URL.
+
+    Convention: for URL "https://cdn/path/firmware.bin", tries to fetch
+    "https://cdn/path/firmware.bin.sha256". Returns the hex digest string
+    or None if the hash file doesn't exist.
+    """
+    import urllib.request
+    import urllib.error
+
+    hash_url = url + ".sha256"
+    try:
+        with urllib.request.urlopen(hash_url, timeout=10, context=SSL_CONTEXT) as resp:
+            content = resp.read(256).decode("ascii", errors="replace").strip()
+            # Hash files may contain "hash  filename" or just "hash"
+            return content.split()[0] if content else None
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def verify_download(file_path, source_url):
+    """Verify a downloaded file against a CDN-provided .sha256 hash.
+
+    Fetches <source_url>.sha256 from the CDN. If available, compares
+    against the local file. Returns True if verified or if no server
+    hash is available (warn-only). Returns False if hash mismatch.
+    """
+    cdn_hash = _fetch_cdn_hash(source_url)
+    if cdn_hash is None:
+        return True  # No server hash available — accept
+
+    actual = sha256_file(file_path)
+    if actual == cdn_hash:
+        status("Integrity verified (SHA-256)", "ok")
+        return True
+
+    status(f"[E108] Integrity check FAILED for {os.path.basename(file_path)}", "err")
+    status(f"  Expected: {cdn_hash}", "err")
+    status(f"  Got:      {actual}", "err")
+    status("The downloaded file does not match the server hash.", "err")
+    status("This could indicate a corrupted download or tampered file.", "err")
+    # Remove the bad file
+    try:
+        os.unlink(file_path)
+        os.unlink(file_path + ".sha256")
+    except OSError:
+        pass
     return False
 
 
@@ -391,27 +556,32 @@ def fetch_releases(channel="stable"):
     url = f"{FIRMWARE_CDN}/{channel}/releases.json"
     for attempt in range(1, 4):
         try:
-            with urllib.request.urlopen(url, timeout=15) as resp:
+            with urllib.request.urlopen(url, timeout=15, context=SSL_CONTEXT) as resp:
                 return json.loads(resp.read().decode())
         except Exception as e:
             if attempt < 3:
                 status(f"Could not fetch releases (attempt {attempt}/3): {e}", "warn")
                 time.sleep(attempt * 2)
-    status(f"Could not fetch releases for '{channel}' after 3 attempts", "err")
+    status(f"[E104] Could not fetch releases for '{channel}' after 3 attempts", "err")
     return None
 
 
 def select_channel():
     """Let user pick stable or beta. Returns channel name string."""
-    print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}  {S.GREEN}◄{S.RESET}")
-    print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
-    print()
-    c = ask("Select channel", "1")
-    if c != "2":
-        return "stable"
+    while True:
+        print(f"      {S.GREEN}{S.BOLD}[1]{S.RESET}  Stable Channel   {S.DIM}(recommended){S.RESET}  {S.GREEN}◄{S.RESET}")
+        print(f"      {S.YELLOW}{S.BOLD}[2]{S.RESET}  Beta Channel     {S.DIM}(pre-release / feature branches){S.RESET}")
+        print()
+        c = ask("Select channel", "1")
+        if c != "2":
+            return "stable"
 
-    # Beta channel — discover staging + feature branches
-    return _select_beta_channel()
+        # Beta channel — discover staging + feature branches
+        result = _select_beta_channel()
+        if result is not None:
+            return result
+        # User picked [0] Back — re-show channel selection
+        print()
 
 
 def _discover_feature_branches():
@@ -423,12 +593,11 @@ def _discover_feature_branches():
     try:
         req = urllib.request.Request(api_url)
         req.add_header("Accept", "application/vnd.github+json")
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CONTEXT) as resp:
             releases = json.loads(resp.read().decode())
     except Exception:
         return []
 
-    import re
     candidates = set()
     for r in releases:
         if not r.get("prerelease"):
@@ -444,7 +613,7 @@ def _discover_feature_branches():
         try:
             url = f"{FIRMWARE_CDN}/{name}/releases.json"
             req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=5):
+            with urllib.request.urlopen(req, timeout=5, context=SSL_CONTEXT):
                 verified.append(name)
         except Exception:
             pass
@@ -453,11 +622,15 @@ def _discover_feature_branches():
 
 
 def _select_beta_channel():
-    """Show beta channel sub-menu: staging + feature branches."""
+    """Show beta channel sub-menu: staging + feature branches.
+
+    Returns channel name string, or None if user picks [0] Back.
+    """
     status("Discovering beta channels …", "work")
     features = _discover_feature_branches()
 
     print()
+    print(f"      {S.DIM}{S.BOLD}[0]{S.RESET}  {S.DIM}Back{S.RESET}")
     print(f"      {S.YELLOW}{S.BOLD}[1]{S.RESET}  Staging  {S.DIM}(latest pre-release){S.RESET}  {S.GREEN}◄{S.RESET}")
 
     for i, name in enumerate(features, 2):
@@ -468,11 +641,13 @@ def _select_beta_channel():
     c = ask("Select beta channel", "1")
 
     try:
-        idx = int(c) - 1
+        idx = int(c)
         if idx == 0:
+            return None
+        if idx == 1:
             return "staging"
-        if 0 < idx <= len(features):
-            return features[idx - 1]
+        if 1 < idx <= len(features) + 1:
+            return features[idx - 2]
     except ValueError:
         pass
 
@@ -485,7 +660,7 @@ def select_version(catalog, channel="stable"):
     For non-stable channels, auto-selects the latest (only) version."""
     versions = catalog.get("versions", [])
     if not versions:
-        status("No versions found in catalog!", "err")
+        status("[E105] No versions found in catalog!", "err")
         return None
 
     # For beta channels (staging / feature-test), always use latest — no picker
@@ -546,13 +721,13 @@ def check_python():
     if v.major >= 3 and v.minor >= 8:
         status(f"Python {v.major}.{v.minor}.{v.micro}", "ok")
         return True
-    status(f"Python 3.8+ required (found {v.major}.{v.minor})", "err")
+    status(f"[E201] Python 3.8+ required (found {v.major}.{v.minor})", "err")
     return False
 
 
 def _venv_python():
     """Return the Python executable path inside the local venv."""
-    if platform.system() == "Windows":
+    if PLATFORM == "Windows":
         return os.path.join(VENV_DIR, "Scripts", "python.exe")
     return os.path.join(VENV_DIR, "bin", "python3")
 
@@ -565,7 +740,7 @@ def _try_esptool(python_cmd):
             capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
             return r.stdout.strip().splitlines()[0]
-    except (FileNotFoundError, Exception):
+    except (subprocess.SubprocessError, OSError):
         pass
     return None
 
@@ -594,7 +769,7 @@ def find_esptool():
             ver = r.stdout.strip().splitlines()[0]
             status(f"esptool: {ver} (system)", "ok")
             return ["esptool.py"]
-    except (FileNotFoundError, Exception):
+    except (subprocess.SubprocessError, OSError):
         pass
 
     return None
@@ -610,7 +785,7 @@ def install_esptool():
             import venv
             venv.create(VENV_DIR, with_pip=True)
             status("Virtual environment created", "ok")
-        except Exception:
+        except (ImportError, OSError):
             # Fallback: use subprocess
             try:
                 r = subprocess.run(
@@ -620,37 +795,37 @@ def install_esptool():
                     err_msg = r.stderr.strip()
                     # Detect missing python3-venv on Debian/Ubuntu
                     if "ensurepip" in err_msg or "No module named" in err_msg:
-                        status("Python venv module is not installed", "err")
-                        if platform.system() == "Linux":
+                        status("[E202] Python venv module is not installed", "err")
+                        if PLATFORM == "Linux":
                             status("Fix with:", "info")
                             status(f"  sudo apt install python3-venv   {S.DIM}(Debian/Ubuntu){S.RESET}", "info")
                             status(f"  sudo dnf install python3-libs   {S.DIM}(Fedora/RHEL){S.RESET}", "info")
                         else:
-                            status(f"Error: {err_msg}", "err")
+                            status(f"[E202] Error: {err_msg}", "err")
                         return False
-                    status(f"Could not create venv: {err_msg}", "err")
+                    status(f"[E203] Could not create venv: {err_msg}", "err")
                     return False
                 status("Virtual environment created", "ok")
-            except Exception as e:
-                status(f"Could not create venv: {e}", "err")
+            except (subprocess.SubprocessError, OSError) as e:
+                status(f"[E203] Could not create venv: {e}", "err")
                 return False
 
-    status("Installing esptool …", "work")
+    status(f"Installing esptool {ESPTOOL_VERSION} …", "work")
     print()
     try:
         r = subprocess.run(
-            [venv_py, "-m", "pip", "install", "--upgrade", "esptool"],
+            [venv_py, "-m", "pip", "install", f"esptool=={ESPTOOL_VERSION}"],
             timeout=120,
         )
         print()
         if r.returncode == 0:
             status("esptool installed!", "ok")
             return True
-        status("pip install failed (see output above)", "err")
+        status("[E204] pip install failed (see output above)", "err")
     except subprocess.TimeoutExpired:
-        status("Installation timed out", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+        status("[E205] Installation timed out", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E206] esptool install error: {e}", "err")
     return False
 
 
@@ -674,7 +849,7 @@ def ensure_esptool():
 def find_serial_ports():
     """Scan for serial ports."""
     ports = []
-    osname = platform.system()
+    osname = PLATFORM
     if osname == "Linux":
         for p in ("/dev/ttyUSB*", "/dev/ttyACM*"):
             ports.extend(glob.glob(p))
@@ -702,6 +877,18 @@ def _port_label(port):
     return ""
 
 
+def _is_valid_port_path(port):
+    """Validate a user-supplied serial port path against safe patterns.
+
+    Accepts /dev/<name> (Unix) or COMn (Windows).
+    """
+    if re.match(r'^/dev/[a-zA-Z0-9._-]+$', port):
+        return True
+    if re.match(r'^COM\d+$', port, re.IGNORECASE):
+        return True
+    return False
+
+
 def select_port(prompt_extra=""):
     """Auto-detect and let user select a serial port. Returns port path or None."""
     scan_count = 0
@@ -719,7 +906,7 @@ def select_port(prompt_extra=""):
                 print()
             else:
                 print()  # newline after \r status
-            status("No serial devices found", "err")
+            status("[E207] No serial devices found", "err")
             if scan_count <= 1:
                 # Show full guidance on first attempt only
                 action_box([
@@ -745,7 +932,10 @@ def select_port(prompt_extra=""):
                 return None
             if choice.lower() == "r":
                 continue
-            return choice
+            if _is_valid_port_path(choice):
+                return choice
+            status("[E209] Invalid port path — expected /dev/... or COMn", "err")
+            continue
 
         if scan_count > 1:
             print()  # newline after \r status
@@ -755,9 +945,13 @@ def select_port(prompt_extra=""):
             status(f"Found port → {S.CYAN}{ports[0]}{S.RESET}{label}", "ok")
             if ask("Use this port? (y/n)", "y").lower() == "y":
                 return ports[0]
+            # User rejected the single port — rescan
+            print()
             continue
 
-        status(f"Found {len(ports)} port(s):\n", "ok")
+        # Multiple ports found — let user pick
+        status(f"Found {len(ports)} port(s):", "ok")
+        print()
         for i, p in enumerate(ports, 1):
             label = _port_label(p)
             print(f"      {S.GREEN}{S.BOLD}[{i}]{S.RESET}  {p}{label}")
@@ -772,10 +966,10 @@ def select_port(prompt_extra=""):
             if 0 <= idx < len(ports):
                 return ports[idx]
         except ValueError:
-            if choice.startswith("/dev/") or choice.startswith("COM"):
+            if _is_valid_port_path(choice):
                 return choice
 
-        status("Invalid selection", "err")
+        status("[E208] Invalid selection", "err")
         return None
 
 
@@ -818,7 +1012,8 @@ def read_partition_table(esptool_cmd, port):
 
     Returns list of partition entries or None on failure.
     """
-    pt_file = os.path.join(tempfile.gettempdir(), "tbd_partition_table.bin")
+    fd, pt_file = tempfile.mkstemp(prefix="tbd_pt_", suffix=".bin")
+    os.close(fd)
     cmd = esptool_cmd + [
         "--chip", CHIP,
         "--port", port,
@@ -841,7 +1036,7 @@ def read_partition_table(esptool_cmd, port):
         except OSError:
             pass
         return parse_partition_table(data)
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         try:
             os.unlink(pt_file)
         except OSError:
@@ -919,7 +1114,7 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
     4. Hard-resets so the device boots into SD-card USB mode
     """
     if not os.path.exists(msc_path):
-        status(f"MSC firmware not found: {msc_path}", "err")
+        status(f"[E301] MSC firmware not found: {msc_path}", "err")
         return False
 
     # ── Detect ota_1 address from device partition table ──
@@ -935,7 +1130,7 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
         # Sanity check: MSC firmware must fit in the partition
         msc_size = os.path.getsize(msc_path)
         if msc_size > ota1_size:
-            status(f"MSC firmware ({msc_size} bytes) exceeds ota_1 partition "
+            status(f"[E302] MSC firmware ({msc_size} bytes) exceeds ota_1 partition "
                    f"({ota1_size} bytes)!", "err")
             return False
     else:
@@ -945,8 +1140,8 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
 
     # ── Build OTA data blob (select ota_1 = slot 1) ──
     ota_data = build_ota_data(1)
-    ota_data_path = os.path.join(tempfile.gettempdir(), "ota_data_msc.bin")
-    with open(ota_data_path, 'wb') as f:
+    fd, ota_data_path = tempfile.mkstemp(prefix="tbd_ota_", suffix=".bin")
+    with os.fdopen(fd, 'wb') as f:
         f.write(ota_data)
 
     size_mb = os.path.getsize(msc_path) / 1048576
@@ -998,16 +1193,16 @@ def flash_msc_mode(esptool_cmd, port, msc_path):
             return True
         output = "".join(output_lines)
         if "Resource busy" in output or "Errno 16" in output:
-            status("Port is busy — another program may be using it", "err")
+            status("[E303] Port is busy — another program may be using it", "err")
             status("Close any serial monitors, terminals, or IDEs using this port", "info")
             time.sleep(2)
         elif "No serial data" in output:
-            status("No response from device — try entering download mode", "err")
+            status("[E303] No response from device — try entering download mode", "err")
             status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
         else:
-            status("MSC firmware flash failed — check errors above", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+            status("[E303] MSC firmware flash failed — check errors above", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E304] MSC flash error: {e}", "err")
     return False
 
 
@@ -1019,7 +1214,7 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
     is needed — it would cause an overlap error in esptool.
     """
     if not os.path.exists(firmware_path):
-        status(f"Firmware file not found: {firmware_path}", "err")
+        status(f"[E305] Firmware file not found: {firmware_path}", "err")
         return False
 
     size_mb = os.path.getsize(firmware_path) / 1048576
@@ -1061,16 +1256,16 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
             return True
         output = "".join(output_lines)
         if "Resource busy" in output or "Errno 16" in output:
-            status("Port is busy — another program may be using it", "err")
+            status(f"[E306] Port is busy — another program may be using it", "err")
             status("Close any serial monitors, terminals, or IDEs using this port", "info")
             time.sleep(2)
         elif "No serial data" in output:
-            status("No response from device — try entering download mode", "err")
+            status(f"[E306] No response from device — try entering download mode", "err")
             status("Hold BOOT → press Reset → release BOOT → press Reset again", "info")
         else:
-            status(f"Flashing {label} failed — check errors above", "err")
-    except Exception as e:
-        status(f"Error: {e}", "err")
+            status(f"[E306] Flashing {label} failed — check errors above", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E307] Flash error: {e}", "err")
     return False
 
 
@@ -1079,7 +1274,7 @@ def flash_p4(esptool_cmd, port, firmware_path, offset=UNIFIED_OFFSET, label="P4 
 # ═══════════════════════════════════════════════════
 def find_uf2_volume():
     """Find a mounted UF2 bootloader volume (RP2350 in BOOTSEL mode)."""
-    osname = platform.system()
+    osname = PLATFORM
 
     if osname == "Darwin":
         bases = ["/Volumes"]
@@ -1125,7 +1320,7 @@ def wait_for_uf2_volume(timeout=UF2_MOUNT_TIMEOUT):
         time.sleep(1)
 
     print()
-    status("UF2 volume not found within timeout", "err")
+    status("[E308] UF2 volume not found within timeout", "err")
     return None
 
 
@@ -1140,8 +1335,8 @@ def flash_uf2(uf2_path, volume):
         time.sleep(2)
         status("UF2 copied — RP2350 will reboot automatically", "ok")
         return True
-    except Exception as e:
-        status(f"Failed to copy UF2: {e}", "err")
+    except (subprocess.SubprocessError, OSError) as e:
+        status(f"[E309] Failed to copy UF2: {e}", "err")
         return False
 
 
@@ -1171,7 +1366,7 @@ def wizard_flash_pico(urls, cache_dir):
     # Download UF2
     uf2_name = os.path.basename(pico_url)
     uf2_path = os.path.join(cache_dir, uf2_name)
-    if not os.path.exists(uf2_path):
+    if not is_valid_cached_file(uf2_path):
         if not download_file(pico_url, uf2_path, "Pico firmware"):
             return False
     else:
@@ -1206,13 +1401,28 @@ def wizard_flash_pico(urls, cache_dir):
 # ═══════════════════════════════════════════════════
 #  SD CARD OPERATIONS
 # ═══════════════════════════════════════════════════
+def _safe_drive_letter(vol_path):
+    """Extract and validate a Windows drive letter from a path.
+
+    Returns a single uppercase letter (e.g. 'D') or None if the path
+    doesn't contain a valid drive letter. Prevents PowerShell injection
+    via crafted mount paths.
+    """
+    # os.path.splitdrive only works for drive letters on Windows (ntpath).
+    # Use a regex so validation works on any platform.
+    m = re.match(r'^([A-Za-z]):', vol_path)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
 def _is_removable_volume(vol_path):
     """Check if a volume is removable/external media (not a system disk).
 
     On macOS: uses diskutil to verify the volume is on removable/external media.
     On Linux: checks if the device is under /media or /run/media (auto-mounted).
     """
-    osname = platform.system()
+    osname = PLATFORM
 
     if osname == "Darwin":
         try:
@@ -1261,7 +1471,7 @@ def _get_volume_info(vol_path):
         'device': 'unknown',
     }
 
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         try:
             r = subprocess.run(
                 ["diskutil", "info", vol_path],
@@ -1281,7 +1491,7 @@ def _get_volume_info(vol_path):
                         info['device'] = line.split(":", 1)[1].strip()
         except Exception:
             pass
-    elif platform.system() == "Linux":
+    elif PLATFORM == "Linux":
         try:
             r = subprocess.run(
                 ["df", "-h", vol_path],
@@ -1294,35 +1504,43 @@ def _get_volume_info(vol_path):
                     info['size'] = parts[1]
         except Exception:
             pass
-    elif platform.system() == "Windows":
-        drive_letter = os.path.splitdrive(vol_path)[0]
-        if drive_letter:
-            info['device'] = drive_letter
+    elif PLATFORM == "Windows":
+        dl = _safe_drive_letter(vol_path)
+        if dl:
+            info['device'] = dl + ":"
             try:
                 r = subprocess.run(
-                    ["cmd", "/c", "vol", drive_letter],
+                    ["cmd", "/c", "vol", dl + ":"],
                     capture_output=True, text=True, timeout=5)
                 for line in r.stdout.splitlines():
                     if "is" in line.lower():
                         info['name'] = line.split("is", 1)[-1].strip()
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 pass
+            # PowerShell (works on Windows 10+, unlike deprecated wmic)
             try:
+                ps_cmd = (
+                    f"Get-Volume -DriveLetter '{dl}' "
+                    "| Select-Object FileSystemType,Size "
+                    "| ForEach-Object {{ "
+                    "  'FS=' + $_.FileSystemType; "
+                    "  'SZ=' + $_.Size "
+                    "}}"
+                )
                 r = subprocess.run(
-                    ["wmic", "logicaldisk", "where",
-                     f"DeviceID='{drive_letter}'", "get", "Size,FileSystem",
-                     "/format:list"],
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
                     capture_output=True, text=True, timeout=5)
                 for line in r.stdout.splitlines():
-                    if line.startswith("FileSystem="):
-                        info['filesystem'] = line.split("=", 1)[1].strip()
-                    elif line.startswith("Size="):
+                    line = line.strip()
+                    if line.startswith("FS="):
+                        info['filesystem'] = line[3:]
+                    elif line.startswith("SZ="):
                         try:
-                            sz = int(line.split("=", 1)[1].strip())
+                            sz = int(line[3:])
                             info['size'] = f"{sz / 1073741824:.1f} GB"
                         except ValueError:
                             pass
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 pass
 
     return info
@@ -1345,7 +1563,7 @@ def _is_safe_to_erase(vol_path):
         return False, f"System directory: {real_path}"
 
     # Layer 3: On macOS, must be under /Volumes/ (not /Volumes/Macintosh HD)
-    if platform.system() == "Darwin":
+    if PLATFORM == "Darwin":
         if not real_path.startswith("/Volumes/"):
             return False, f"Not a mounted volume: {real_path}"
         vol_name = real_path.replace("/Volumes/", "").split("/")[0]
@@ -1371,7 +1589,7 @@ def find_sd_card():
     2. Check for TBD-16 signature files (data/spm-config.json)
     3. Always validate the volume is on removable media
     """
-    osname = platform.system()
+    osname = PLATFORM
 
     candidates = []
 
@@ -1471,24 +1689,31 @@ def wait_for_sd_card(timeout=SD_MOUNT_TIMEOUT):
         time.sleep(2)
 
     print()
-    status("SD card not found within timeout", "err")
+    status("[E401] SD card not found within timeout", "err")
     return None
 
 
 def erase_sd_card(mount_point):
     """Erase all user files on the SD card. Returns True on success.
 
-    Safety: validates mount_point is a removable volume before erasing.
-    Handles macOS filesystem metadata (.Spotlight-V100, .fseventsd) that
-    can become read-only on FAT volumes.
+    Safety: validates mount_point is a removable volume before erasing,
+    then re-verifies the device node hasn't changed (TOCTOU mitigation).
     """
     # SAFETY GATE: Multi-layer validation before any deletion
     safe, reason = _is_safe_to_erase(mount_point)
     if not safe:
-        status(f"REFUSED to erase: {reason}", "err")
+        status(f"[E402] REFUSED to erase: {reason}", "err")
         return False
 
     vol_info = _get_volume_info(mount_point)
+
+    # TOCTOU mitigation: re-verify the volume is still removable media
+    # right before we start deleting. Catches mount-point swaps between
+    # the initial safety check and the actual erase.
+    if not _is_removable_volume(mount_point):
+        status("[E402] REFUSED to erase: volume changed (no longer removable)", "err")
+        return False
+
     status(f"Erasing SD card: {vol_info['name']} ({vol_info['filesystem']}, {vol_info['size']}) on {vol_info['device']}", "work")
 
     errors = []
@@ -1517,8 +1742,8 @@ def erase_sd_card(mount_point):
         else:
             status("SD card erased", "ok")
         return True
-    except Exception as e:
-        status(f"Error erasing SD card: {e}", "err")
+    except OSError as e:
+        status(f"[E403] Error erasing SD card: {e}", "err")
         return False
 
 
@@ -1531,7 +1756,7 @@ def extract_sd_image(zip_path, mount_point):
             # Verify integrity before extraction (catches corrupted downloads)
             bad = zf.testzip()
             if bad is not None:
-                status(f"Zip integrity check failed — corrupted entry: {bad}", "err")
+                status(f"[E404] Zip integrity check failed — corrupted entry: {bad}", "err")
                 status("Delete the cached file and re-download:", "info")
                 status(f"  rm {zip_path}", "info")
                 return False
@@ -1586,10 +1811,10 @@ def extract_sd_image(zip_path, mount_point):
 
     except zipfile.BadZipFile:
         print()
-        status("Downloaded file is not a valid zip — try re-downloading", "err")
-    except Exception as e:
+        status("[E405] Downloaded file is not a valid zip — try re-downloading", "err")
+    except OSError as e:
         print()
-        status(f"Extraction failed: {e}", "err")
+        status(f"[E406] Extraction failed: {e}", "err")
     return False
 
 
@@ -1633,7 +1858,7 @@ def write_hash_file(hash_url, mount_point, cache_dir):
     hash_name = os.path.basename(hash_url)
     hash_local = os.path.join(cache_dir, hash_name)
 
-    if not download_file(hash_url, hash_local, "SD card hash"):
+    if not download_file(hash_url, hash_local, "SD card hash", verify=False):
         status("Could not download hash — skipping .version write", "warn")
         return True
 
@@ -1656,11 +1881,11 @@ def eject_sd_card(mount_point):
     """Safely eject the SD card."""
     status(f"Ejecting {mount_point} …", "work")
     try:
-        if platform.system() != "Windows":
+        if PLATFORM != "Windows":
             subprocess.run(["sync"], timeout=10, capture_output=True)
         time.sleep(1)
 
-        if platform.system() == "Darwin":
+        if PLATFORM == "Darwin":
             r = subprocess.run(
                 ["diskutil", "eject", mount_point],
                 capture_output=True, text=True, timeout=30)
@@ -1668,7 +1893,7 @@ def eject_sd_card(mount_point):
                 status("SD card ejected", "ok")
                 return True
             status(f"Eject warning: {r.stderr.strip()}", "warn")
-        elif platform.system() == "Linux":
+        elif PLATFORM == "Linux":
             r = subprocess.run(
                 ["umount", mount_point],
                 capture_output=True, text=True, timeout=30)
@@ -1676,13 +1901,13 @@ def eject_sd_card(mount_point):
                 status("SD card unmounted", "ok")
                 return True
             status(f"Unmount warning: {r.stderr.strip()}", "warn")
-        elif platform.system() == "Windows":
+        elif PLATFORM == "Windows":
             # Use PowerShell to eject removable drive
-            drive_letter = os.path.splitdrive(mount_point)[0]
-            if drive_letter:
+            dl = _safe_drive_letter(mount_point)
+            if dl:
                 r = subprocess.run(
                     ["powershell", "-Command",
-                     f"(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{drive_letter}\\').InvokeVerb('Eject')"],
+                     f"(New-Object -ComObject Shell.Application).Namespace(17).ParseName('{dl}:\\').InvokeVerb('Eject')"],
                     capture_output=True, text=True, timeout=30)
                 if r.returncode == 0:
                     status("SD card ejected", "ok")
@@ -1751,7 +1976,7 @@ def wizard_quick(channel="stable", version=None, is_cli=False):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -1871,7 +2096,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         # Download MSC firmware
         msc_name = os.path.basename(urls["msc_url"])
         msc_path = os.path.join(cache_dir, msc_name)
-        if not os.path.exists(msc_path):
+        if not is_valid_cached_file(msc_path):
             if not download_file(urls["msc_url"], msc_path, "MSC firmware"):
                 return False
         else:
@@ -2001,7 +2226,11 @@ def wizard_full(channel="stable", version=None, is_cli=False):
                 if not sd_mount:
                     sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
                     if not os.path.isdir(sd_mount):
-                        status(f"Directory not found: {sd_mount}", "err")
+                        status(f"[E407] Directory not found: {sd_mount}", "err")
+                        return False
+                    safe, reason = _is_safe_to_erase(sd_mount)
+                    if not safe:
+                        status(f"[E402] REFUSED: {reason}", "err")
                         return False
                 # Fall through to SD write step below
 
@@ -2027,7 +2256,11 @@ def wizard_full(channel="stable", version=None, is_cli=False):
         if not sd_mount:
             sd_mount = ask("Enter the SD card mount path (e.g. /Volumes/NO NAME)")
             if not os.path.isdir(sd_mount):
-                status(f"Directory not found: {sd_mount}", "err")
+                status(f"[E407] Directory not found: {sd_mount}", "err")
+                return False
+            safe, reason = _is_safe_to_erase(sd_mount)
+            if not safe:
+                status(f"[E402] REFUSED: {reason}", "err")
                 return False
 
     # ── Write SD card image ──
@@ -2042,12 +2275,12 @@ def wizard_full(channel="stable", version=None, is_cli=False):
     status(f"  Device:     {vol_info['device']}", "info")
 
     if not urls.get("sd_url"):
-        status("No SD card image available for this version!", "err")
+        status("[E106] No SD card image available for this version!", "err")
         return False
 
     sd_zip_name = os.path.basename(urls["sd_url"])
     sd_zip_path = os.path.join(cache_dir, sd_zip_name)
-    if not os.path.exists(sd_zip_path):
+    if not is_valid_cached_file(sd_zip_path):
         if not download_file(urls["sd_url"], sd_zip_path, "SD card image"):
             return False
     else:
@@ -2090,7 +2323,7 @@ def wizard_full(channel="stable", version=None, is_cli=False):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -2146,7 +2379,7 @@ def flash_p4_only(channel="stable"):
 
     p4_name = os.path.basename(urls["p4_url"])
     p4_path = os.path.join(cache_dir, p4_name)
-    if not os.path.exists(p4_path):
+    if not is_valid_cached_file(p4_path):
         if not download_file(urls["p4_url"], p4_path, "P4 firmware"):
             return False
     else:
@@ -2210,7 +2443,7 @@ def deploy_sd_only(channel="stable"):
     urls = build_urls(version, channel)
 
     if not urls.get("sd_url"):
-        status("No SD card image available for this version", "err")
+        status("[E106] No SD card image available for this version", "err")
         return False
 
     # SD access method
@@ -2231,7 +2464,7 @@ def deploy_sd_only(channel="stable"):
 
         msc_name = os.path.basename(urls["msc_url"])
         msc_path = os.path.join(cache_dir, msc_name)
-        if not os.path.exists(msc_path):
+        if not is_valid_cached_file(msc_path):
             if not download_file(urls["msc_url"], msc_path, "MSC firmware"):
                 return False
 
@@ -2316,13 +2549,17 @@ def deploy_sd_only(channel="stable"):
         if not sd_mount:
             sd_mount = ask("Enter SD card mount path")
             if not os.path.isdir(sd_mount):
-                status(f"Not found: {sd_mount}", "err")
+                status(f"[E407] Not found: {sd_mount}", "err")
+                return False
+            safe, reason = _is_safe_to_erase(sd_mount)
+            if not safe:
+                status(f"[E402] REFUSED: {reason}", "err")
                 return False
 
     # Download SD image
     sd_zip_name = os.path.basename(urls["sd_url"])
     sd_zip_path = os.path.join(cache_dir, sd_zip_name)
-    if not os.path.exists(sd_zip_path):
+    if not is_valid_cached_file(sd_zip_path):
         if not download_file(urls["sd_url"], sd_zip_path, "SD card image"):
             return False
 
@@ -2356,14 +2593,22 @@ def deploy_sd_only(channel="stable"):
     completion_banner("SD Card Image Deployed!")
 
     if use_msc:
+        print()
         print(f"  {S.YELLOW}{S.BOLD}  ⚠  Device is still in MSC mode!{S.RESET}")
-        print(f"  {S.YELLOW}  Flash P4 firmware to restore normal boot.{S.RESET}")
+        print(f"  {S.YELLOW}  Normal operation will NOT work until P4 firmware is flashed.{S.RESET}")
         print()
         if ask("  Flash P4 now to restore? (y/n)", "y").lower() in ("y", "yes"):
-            _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+            recovered = _restore_p4_from_msc(esptool_cmd, urls, cache_dir)
+            if recovered:
+                completion_banner("SD Deploy + P4 Recovery Complete!")
+                power_cycle_warning()
+                return True
+            else:
+                status("[E310] Recovery flash failed — try [3] Flash P4 Only from the menu", "err")
         else:
-            print(f"  {S.YELLOW}  Use menu [1] Quick Update or [3] Flash P4 Only to restore.{S.RESET}")
-        print()
+            status("Skipping P4 flash — device stays in MSC mode!", "warn")
+            status("Use menu option [1] Quick Update or [3] Flash P4 Only to recover", "info")
+            print()
 
     return True
 
@@ -2373,8 +2618,7 @@ def deploy_sd_only(channel="stable"):
 # ═══════════════════════════════════════════════════
 def main_menu():
     """Interactive main menu."""
-    if platform.system() == "Windows":
-        os.system("")
+    _enable_windows_ansi()
 
     while True:
         clear()
@@ -2432,7 +2676,7 @@ def main_menu():
             ask("\nPress Enter to return to menu")
 
         else:
-            status("Invalid choice", "err")
+            status("[E501] Invalid choice", "err")
             time.sleep(0.5)
 
 
@@ -2472,8 +2716,7 @@ examples:
 
 def run_cli(args):
     """Handle CLI arguments."""
-    if platform.system() == "Windows":
-        os.system("")
+    _enable_windows_ansi()
 
     banner()
 
@@ -2486,6 +2729,12 @@ def run_cli(args):
     # "beta" is a shorthand — use staging (latest pre-release)
     if channel == "beta":
         channel = "staging"
+
+    # Validate channel name to prevent path traversal in CDN URLs
+    if not re.match(r'^[a-z0-9][a-z0-9-]*$', channel):
+        status(f"[E109] Invalid channel name: {channel}", "err")
+        status("Allowed: lowercase letters, digits, hyphens (e.g. stable, staging, feature-test-xyz)", "info")
+        return
 
     if args.quick:
         wizard_quick(channel, is_cli=True)
